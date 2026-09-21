@@ -1,0 +1,59 @@
+[workspace]
+resolver = "3"
+members = ["crates/galata-tower"]
+
+# Declared once, and taken once — every member says `license.workspace = true`,
+# the convention galata-datawatch and galata-vault already hold.
+[workspace.package]
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/sercanatalik/galata-tower"
+rust-version = "1.98"
+version = "0.1.0"
+
+[workspace.dependencies]
+# **The record, read-only.** The tower watches the RECORD, not the worker: a
+# heartbeat is a claim, a closed partition still holding 1,412 segments is a
+# fact on disk. `partitions`, `frontier` and `overdue_closed` are that fact.
+#
+# PATH dependencies, and they have to be: galata-datawatch is pre-0.1.0 and
+# publishes nothing yet (`cargo search galata-segments` returns nothing). They
+# become registry dependencies when its Tier 10 lands, and the sibling checkout
+# stops being load-bearing.
+galata-segments = { path = "../galata-datawatch/crates/galata-segments" }
+galata-wire = { path = "../galata-datawatch/crates/galata-wire" }
+# **`default-features = false`, and this is the whole dependency argument.**
+# The tape schemas, and none of the capture loop: a tree built without
+# `capture` links ZERO transport crates — 541 down to 279, measured in
+# galata-datawatch's `design/measured.md`. The tower must never acquire the
+# websocket stack to read parquet, and `scripts/check-no-capture-loop.sh`
+# asks cargo rather than trusting this comment.
+galata-datawatch = { path = "../galata-datawatch/crates/galata-datawatch", default-features = false }
+
+axum = { version = "0.8", features = ["json", "query", "tokio", "http1"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# One binary serves the API and the screen. The cereyan pattern, already proven
+# in this user's tree.
+rust-embed = { version = "8.12", features = ["interpolate-folder-path"] }
+# NOT declared until a member uses one, because a table naming something
+# nobody references reads as though versions were pinned in one place when
+# they are not:
+#   galata-broker  — the live `status.<venue>` stream, and async-nats with it.
+#   utoipa         — the generated contract. `openapi.snapshot.json` ->
+#                    openapi-typescript -> the client, with a `--check` mode
+#                    failing CI on drift. A snapshot of three routes is a
+#                    snapshot nobody reads; it arrives with the surface.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[profile.release]
+debug = 1

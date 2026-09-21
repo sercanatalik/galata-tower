@@ -1,0 +1,11 @@
+# Pinned to stable, as galata-datawatch and galata-vault both are. This
+# machine's default toolchain is nightly, and a tree that builds only there is
+# a tree nobody else can build.
+#
+# 1.98.1 is the same floor both siblings hold, and this tree takes
+# galata-datawatch's crates by path — so a lower one here would be a floor that
+# disagrees with what it compiles.
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

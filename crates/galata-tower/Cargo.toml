@@ -1,0 +1,26 @@
+[package]
+name = "galata-tower"
+description = "The market-data screen for galata-datawatch: one binary serving a read API over the record and the live status stream."
+# Not published. It is an application, and it depends on a tree that does not
+# publish yet.
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+galata-segments.workspace = true
+galata-wire.workspace = true
+galata-datawatch.workspace = true
+axum.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rust-embed.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

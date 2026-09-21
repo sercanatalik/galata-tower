@@ -1,0 +1,14 @@
+/target
+
+# The maintainer's local tooling. Not part of the published project, and a repo
+# that tracks them leaks working notes to anyone who clones it.
+/.claude/
+/openspec/
+
+# The screen's build inputs. `ui/dist` is NOT here: rust-embed reads it at
+# compile time, so the tree must carry at least a placeholder or the binary
+# does not build.
+/ui/node_modules/
+
+# macOS Finder metadata, which this tree writes everywhere.
+.DS_Store
