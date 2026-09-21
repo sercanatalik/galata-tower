@@ -37,14 +37,20 @@ serde_json = "1"
 # One binary serves the API and the screen. The cereyan pattern, already proven
 # in this user's tree.
 rust-embed = { version = "8.12", features = ["interpolate-folder-path"] }
+# The contract, derived rather than written. The predecessor kept 669 lines of
+# hand-typed TypeScript and a 343-line fixture test whose own header admits the
+# weakness: "a field the server REMOVES fails naming it, and a field it ADDS
+# passes. One direction." Deriving the schemas from the response types and the
+# paths from the routes means a route is declared once.
+utoipa = { version = "5.5", features = ["axum_extras"] }
+# `OpenApiRouter` takes the paths from the axum routes themselves. Without it a
+# route is written for axum and described again for the document, and the two
+# drift exactly the way the hand-written types did.
+utoipa-axum = "0.2"
 # NOT declared until a member uses one, because a table naming something
 # nobody references reads as though versions were pinned in one place when
 # they are not:
 #   galata-broker  — the live `status.<venue>` stream, and async-nats with it.
-#   utoipa         — the generated contract. `openapi.snapshot.json` ->
-#                    openapi-typescript -> the client, with a `--check` mode
-#                    failing CI on drift. A snapshot of three routes is a
-#                    snapshot nobody reads; it arrives with the surface.
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

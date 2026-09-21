@@ -1,0 +1,132 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "galata-tower",
+    "description": "A read API over the galata-datawatch record. It watches the record, not the worker.",
+    "license": {
+      "name": "MIT",
+      "identifier": "MIT"
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/v1/about": {
+      "get": {
+        "summary": "What this tower reads.",
+        "operationId": "about",
+        "responses": {
+          "200": {
+            "description": "The archive root and the tape's prune columns",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/About"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/overdue": {
+      "get": {
+        "summary": "Closed days still holding more segments than compaction should have left.",
+        "description": "`max_segments` is the caller's threshold, because what counts as too many is\nan operator's judgement and this reports rather than judges.",
+        "operationId": "overdue",
+        "responses": {
+          "200": {
+            "description": "Closed days still holding segments",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Overdue"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/partitions": {
+      "get": {
+        "summary": "The partitions the record holds.",
+        "operationId": "partitions",
+        "responses": {
+          "200": {
+            "description": "Every partition in the archive",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Partition"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "About": {
+        "type": "object",
+        "description": "What this tower reads, and how the tape may be narrowed.\n\nThe screen builds its own queries, and `prune_on` is what makes a windowed\nread cheap — so it is served rather than duplicated in TypeScript, where it\nwould be a second copy free to disagree.",
+        "required": [
+          "archive",
+          "prune_on"
+        ],
+        "properties": {
+          "archive": {
+            "type": "string",
+            "description": "The archive root being watched."
+          },
+          "prune_on": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The tape columns a reader can prune on, from the schema itself."
+          }
+        }
+      },
+      "Overdue": {
+        "type": "object",
+        "description": "A closed day still holding more segments than compaction should have left.\n\n**Reported, never judged.** The number is here; whether it is bad belongs to\nwhoever set the threshold.",
+        "required": [
+          "path",
+          "segments"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "The partition."
+          },
+          "segments": {
+            "type": "integer",
+            "description": "How many segments it still holds.",
+            "minimum": 0
+          }
+        }
+      },
+      "Partition": {
+        "type": "object",
+        "description": "One partition of the record, as the store lists it.",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Its path relative to the archive root."
+          }
+        }
+      }
+    }
+  }
+}

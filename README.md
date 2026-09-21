@@ -31,7 +31,7 @@ This tree links **no capture loop**, and that is checked rather than claimed:
 ```
 
 `galata-datawatch` is taken with `default-features = false`, which is one word
-in a manifest and **85 crates** in the tree — 164 against 249, measured here.
+in a manifest and **85 crates** in the tree — 168 against 253, measured here.
 Turn the feature on and `reqwest`, `rustls`, `tokio-tungstenite`, `tungstenite`,
 `rustls-pki-types` and `webpki-roots` arrive behind a screen whose job is to
 read parquet. The guard is watched failing, by planting exactly that.
@@ -40,11 +40,38 @@ read parquet. The guard is watched failing, by planting exactly that.
 a server needs a server. The rule is not "no async" — it is "nothing that exists
 to talk to a venue".
 
+## The contract is generated, not written
+
+```sh
+./scripts/check-contract-drift.sh            # is the committed document what the code serves?
+./scripts/check-contract-drift.sh --write    # refresh it, and the screen's types with it
+```
+
+`utoipa` derives the schemas from the response types and `utoipa-axum` derives
+the paths from the routes, so a route is declared once. The binary that serves
+them prints the document — `galata-tower --dump-openapi` — and
+`openapi.snapshot.json` is committed as the reviewed authority.
+`ui/src/contract/api.d.ts` is generated from that snapshot and committed too,
+so the screen's types and the server's have one source rather than two that
+agree by inspection.
+
+The predecessor did this by hand: 669 lines of TypeScript, a 233-line client,
+and a 343-line fixture test whose own header names the weakness — *"a field the
+server REMOVES fails naming it, and a field it ADDS passes. One direction."*
+Its fixtures were produced by a `cargo run` in a different repository. Both
+halves are here, the generated types are 165 lines, and a byte diff catches a
+field added as readily as one removed.
+
+The guard regenerates twice and compares before trusting the diff, because a
+byte comparison is only fair over a deterministic generator — and a flaky guard
+teaches people to ignore it.
+
 ## Layout
 
 ```
   crates/galata-tower/   the server
   ui/                    the React app; `ui/dist` is embedded at compile time
+  openapi.snapshot.json  the contract, generated and committed
   scripts/               the guards
 ```
 
@@ -67,8 +94,5 @@ rather than by the binary assuming it.
   predecessor, which was built as a risk board and has to be repointed.
 - **The live status stream.** `galata-broker` and `status.<venue>` arrive with
   the status surface, and bring `async-nats` with them.
-- **The generated contract.** `utoipa` → `openapi.snapshot.json` →
-  `openapi-typescript`, with a `--check` mode failing CI on drift. A snapshot of
-  three routes is a snapshot nobody reads; it arrives with the surface.
 
 Licensed under the MIT licence.

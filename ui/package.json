@@ -1,0 +1,12 @@
+{
+  "name": "galata-tower-ui",
+  "private": true,
+  "type": "module",
+  "comment": "One tool, on purpose. openapi-typescript turns the committed openapi.snapshot.json into src/contract/api.d.ts, which nobody edits. The React port brings the rest; a manifest full of dependencies nothing imports is the same mistake as a workspace table naming crates no member uses.",
+  "scripts": {
+    "contract": "openapi-typescript ../openapi.snapshot.json -o src/contract/api.d.ts"
+  },
+  "devDependencies": {
+    "openapi-typescript": "^7.9.1"
+  }
+}

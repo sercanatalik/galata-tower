@@ -15,10 +15,12 @@ use std::path::PathBuf;
 use axum::extract::State;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
 use axum::{Json, Router};
 use rust_embed::Embed;
 use serde::Serialize;
+use utoipa::{OpenApi, ToSchema};
+use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::routes;
 
 /// The screen, embedded at compile time.
 ///
@@ -37,7 +39,7 @@ struct Tower {
 }
 
 /// One partition of the record, as the store lists it.
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct Partition {
     /// Its path relative to the archive root.
     path: String,
@@ -47,7 +49,7 @@ struct Partition {
 ///
 /// **Reported, never judged.** The number is here; whether it is bad belongs to
 /// whoever set the threshold.
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct Overdue {
     /// The partition.
     path: String,
@@ -60,7 +62,7 @@ struct Overdue {
 /// The screen builds its own queries, and `prune_on` is what makes a windowed
 /// read cheap — so it is served rather than duplicated in TypeScript, where it
 /// would be a second copy free to disagree.
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct About {
     /// The archive root being watched.
     archive: String,
@@ -69,6 +71,11 @@ struct About {
 }
 
 /// The partitions the record holds.
+#[utoipa::path(
+    get,
+    path = "/v1/partitions",
+    responses((status = 200, description = "Every partition in the archive", body = Vec<Partition>)),
+)]
 async fn partitions(State(tower): State<Tower>) -> Json<Vec<Partition>> {
     let root = tower.archive.clone();
     let found = tokio::task::spawn_blocking(move || galata_segments::partitions(&root))
@@ -92,6 +99,11 @@ async fn partitions(State(tower): State<Tower>) -> Json<Vec<Partition>> {
 ///
 /// `max_segments` is the caller's threshold, because what counts as too many is
 /// an operator's judgement and this reports rather than judges.
+#[utoipa::path(
+    get,
+    path = "/v1/overdue",
+    responses((status = 200, description = "Closed days still holding segments", body = Vec<Overdue>)),
+)]
 async fn overdue(State(tower): State<Tower>) -> Json<Vec<Overdue>> {
     let root = tower.archive.clone();
     // A listing walks the store, so it does not belong on the async executor.
@@ -117,6 +129,11 @@ async fn overdue(State(tower): State<Tower>) -> Json<Vec<Overdue>> {
 }
 
 /// What this tower reads.
+#[utoipa::path(
+    get,
+    path = "/v1/about",
+    responses((status = 200, description = "The archive root and the tape's prune columns", body = About)),
+)]
 async fn about(State(tower): State<Tower>) -> Json<About> {
     Json(About {
         archive: tower.archive.display().to_string(),
@@ -151,8 +168,51 @@ fn mime_guess_for(path: &str) -> &'static str {
     }
 }
 
+/// The document, described once by the routes that answer it.
+#[derive(OpenApi)]
+#[openapi(
+    info(
+        title = "galata-tower",
+        description = "A read API over the galata-datawatch record. It watches the record, not the worker.",
+    ),
+    components(schemas(About, Partition, Overdue))
+)]
+struct Contract;
+
+/// The routes, and the document that comes from them.
+///
+/// **One declaration.** `OpenApiRouter` takes each path from the route itself,
+/// so there is no second list to fall out of step with this one.
+fn router(tower: Tower) -> (Router, utoipa::openapi::OpenApi) {
+    OpenApiRouter::with_openapi(Contract::openapi())
+        .routes(routes!(about))
+        .routes(routes!(partitions))
+        .routes(routes!(overdue))
+        .with_state(tower)
+        .split_for_parts()
+}
+
+/// The document as it is committed, byte for byte.
+///
+/// Printed by the binary that serves the routes, never by a separate example:
+/// the predecessor's fixtures came from a `cargo run` in a different
+/// repository, and that distance is what let them go stale.
+fn dump_openapi() -> Result<String, Box<dyn std::error::Error>> {
+    let (_, api) = router(Tower {
+        archive: PathBuf::from("."),
+    });
+    Ok(serde_json::to_string_pretty(&api)? + "\n")
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Before the subscriber: this prints a document and exits, and a log line
+    // on stdout would corrupt it.
+    if std::env::args().nth(1).as_deref() == Some("--dump-openapi") {
+        print!("{}", dump_openapi()?);
+        return Ok(());
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
@@ -167,13 +227,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         archive: PathBuf::from(archive),
     };
 
-    let app = Router::new()
-        .route("/v1/about", get(about))
-        .route("/v1/partitions", get(partitions))
-        .route("/v1/overdue", get(overdue))
-        .with_state(tower.clone())
-        // Everything else is the screen, which routes itself.
-        .fallback(screen);
+    // Everything else is the screen, which routes itself.
+    let (app, _) = router(tower.clone());
+    let app = app.fallback(screen);
 
     // Loopback by default. Serving other machines is a deployment decision,
     // and it is made by setting this rather than by the binary assuming it.
