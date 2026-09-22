@@ -3,24 +3,24 @@ import { useState } from 'react'
 import { $api } from './contract/client'
 import { dec, fmt } from './contract/money'
 
-/** A venue-micros window ending now, so the view shows the latest of whatever is there. */
-/** The windows offered, by name. No string is turned into a number anywhere. */
-/** How many rows the table draws, and therefore how many it asks for. */
-const ROWS = 40
+/**
+ * How many of the newest rows to show. A COUNT, not a period.
+ *
+ * This offered `hour`, `day` and `week` ending at the wall clock, and against a
+ * tape thirty-three hours old every one of them was empty. The table shows the
+ * latest rows, and *latest N is not a time window* — a count answers "which
+ * rows are newest", which is the question a table of the latest rows asks. The
+ * route returns the newest when the cap bites, so the count IS the cap.
+ *
+ * A window remains the right control for a question about a period; this is not
+ * one, and `/v1/tape` still takes a window for callers that are.
+ */
+const COUNTS = { '40': 40, '200': 200, '1000': 1000 } as const
 
-const WINDOWS = {
-  hour: 3600,
-  day: 24 * 3600,
-  week: 7 * 24 * 3600,
-} as const
+type CountName = keyof typeof COUNTS
 
-type WindowName = keyof typeof WINDOWS
-
-/** A venue-micros window ending now, so the view shows the latest of whatever is there. */
-function windowOf(name: WindowName): { from: number; to: number } {
-  const now = Date.now() * 1000
-  return { from: now - WINDOWS[name] * 1_000_000, to: now }
-}
+/** The whole tape; the cap selects the newest. */
+const WHOLE_TAPE = { from: 0, to: 9_000_000_000_000_000 }
 
 /**
  * The tape, read through `money.ts`.
@@ -38,12 +38,11 @@ export default function Tape() {
   // them. An hour bounds it in a live deployment; what would bound it properly
   // is a row limit on the read, which is a change to the route rather than to
   // this component and is named rather than smuggled in here.
-  const [span, setSpan] = useState<WindowName>('hour')
-  const window = windowOf(span)
+  const [count, setCount] = useState<CountName>('40')
   const { data, error, isPending } = $api.useQuery('get', '/v1/tape/{kind}', {
     // Ask for what is drawn. The route caps anyway; asking is what stops
     // eleven megabytes crossing to render forty rows.
-    params: { path: { kind: 'quotes' }, query: { ...window, limit: ROWS } },
+    params: { path: { kind: 'quotes' }, query: { ...WHOLE_TAPE, limit: COUNTS[count] } },
   })
 
   if (error) {
@@ -73,12 +72,13 @@ export default function Tape() {
         Tape <span className="count">{data ? `${data.rows.length} rows` : '…'}</span>
       </h2>
       <p className="muted">
-        quotes, last{' '}
-        <select value={span} onChange={(e) => setSpan(e.target.value as WindowName)}>
-          <option value="hour">hour</option>
-          <option value="day">24 hours</option>
-          <option value="week">week</option>
+        the newest{' '}
+        <select value={count} onChange={(e) => setCount(e.target.value as CountName)}>
+          <option value="40">40</option>
+          <option value="200">200</option>
+          <option value="1000">1000</option>
         </select>{' '}
+        quotes
         · durable to stream_seq {data?.bound ?? '…'}
       </p>
       {isPending ? <p className="muted">reading the tape…</p> : null}

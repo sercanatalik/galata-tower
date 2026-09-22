@@ -1,5 +1,6 @@
 import { $api } from './contract/client'
 import { ageSeconds, useLiveStatus } from './live/status'
+import Candles from './Candles'
 import Tape from './Tape'
 
 /** A refusal, rendered. A blank page is the worst answer to a server that is not there. */
@@ -125,6 +126,7 @@ export default function App() {
       <Status />
       <Partitions />
       <Overdue />
+      <Candles />
       <Tape />
     </main>
   )
