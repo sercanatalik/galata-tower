@@ -219,6 +219,40 @@
         }
       }
     },
+    "/v1/rates": {
+      "get": {
+        "summary": "How many rows the record holds, by hour.",
+        "description": "**The failure nothing else here sees.** A socket that stays open and\ndelivers a trickle records no gap, leaves coverage at its full window, and\nkeeps every instrument's last-seen current — *\"the TCP connection remains\nnominally established, nothing arrives.\"* The partial case is worse than\nthe total one, because the total one is a gap.\n\nNo baseline, no threshold, no flag. What a normal hour holds for a venue is\nthe operator's knowledge, and an hour beside its neighbours is a shape they\ncan read.",
+        "operationId": "rates",
+        "parameters": [
+          {
+            "name": "hours",
+            "in": "query",
+            "description": "The most hour-buckets to return, newest first. Defaults to\n[`tape::DEFAULT_HOURS`].",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Rows per venue, dataset and hour, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Rates"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/status": {
       "get": {
         "summary": "Every venue's status, as it arrives.",
@@ -672,6 +706,36 @@
           }
         }
       },
+      "HourlyRows": {
+        "type": "object",
+        "description": "One hour of one dataset.",
+        "required": [
+          "venue",
+          "kind",
+          "hour_micros",
+          "rows"
+        ],
+        "properties": {
+          "hour_micros": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The hour's start, in our clock."
+          },
+          "kind": {
+            "type": "string",
+            "description": "The dataset."
+          },
+          "rows": {
+            "type": "integer",
+            "description": "How many rows arrived in it.\n\n**A count, not a rate per second.** The newest bucket holds whatever has\nelapsed of it, and the oldest whatever was captured; a count is honestly\nsmaller for a partial hour where a normalised rate would extrapolate\nfrom it.",
+            "minimum": 0
+          },
+          "venue": {
+            "type": "string",
+            "description": "The venue."
+          }
+        }
+      },
       "Instrument": {
         "type": "object",
         "description": "One instrument, as the record holds it.",
@@ -758,6 +822,33 @@
           "path": {
             "type": "string",
             "description": "Its path relative to the archive root."
+          }
+        }
+      },
+      "Rates": {
+        "type": "object",
+        "description": "Rows per hour, newest first.",
+        "required": [
+          "hours",
+          "capped",
+          "buckets"
+        ],
+        "properties": {
+          "buckets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HourlyRows"
+            },
+            "description": "Newest first."
+          },
+          "capped": {
+            "type": "boolean",
+            "description": "Whether a cap applied — so a short answer and a capped one differ."
+          },
+          "hours": {
+            "type": "integer",
+            "description": "How many hours were returned.",
+            "minimum": 0
           }
         }
       },

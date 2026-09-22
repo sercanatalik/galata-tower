@@ -959,6 +959,44 @@ async fn coverage(State(tower): State<Tower>) -> Response {
     }
 }
 
+/// What a caller may narrow the hourly counts by.
+#[derive(Deserialize, utoipa::IntoParams)]
+struct RatesQuery {
+    /// The most hour-buckets to return, newest first. Defaults to
+    /// [`tape::DEFAULT_HOURS`].
+    hours: Option<usize>,
+}
+
+/// How many rows the record holds, by hour.
+///
+/// **The failure nothing else here sees.** A socket that stays open and
+/// delivers a trickle records no gap, leaves coverage at its full window, and
+/// keeps every instrument's last-seen current — *"the TCP connection remains
+/// nominally established, nothing arrives."* The partial case is worse than
+/// the total one, because the total one is a gap.
+///
+/// No baseline, no threshold, no flag. What a normal hour holds for a venue is
+/// the operator's knowledge, and an hour beside its neighbours is a shape they
+/// can read.
+#[utoipa::path(
+    get,
+    path = "/v1/rates",
+    params(RatesQuery),
+    responses((status = 200, description = "Rows per venue, dataset and hour, newest first", body = tape::Rates)),
+)]
+async fn rates(State(tower): State<Tower>, Query(query): Query<RatesQuery>) -> Response {
+    let root = tower.tape.clone();
+    let limit = query.hours.unwrap_or(tape::DEFAULT_HOURS);
+    match tokio::task::spawn_blocking(move || tape::rates(&root, limit)).await {
+        Ok(found) => Json(found).into_response(),
+        Err(join) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("the read did not finish: {join}"),
+        )
+            .into_response(),
+    }
+}
+
 /// The document, described once by the routes that answer it.
 #[derive(OpenApi)]
 #[openapi(
@@ -985,6 +1023,7 @@ fn router(tower: Tower) -> (Router, utoipa::openapi::OpenApi) {
         .routes(routes!(instruments))
         .routes(routes!(failures))
         .routes(routes!(coverage))
+        .routes(routes!(rates))
         .with_state(tower)
         .split_for_parts()
 }

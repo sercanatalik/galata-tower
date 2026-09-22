@@ -922,6 +922,46 @@ mod tests {
         assert!(found.days.is_empty());
     }
 
+    /// **`div_euclid`, not `/`.** A timestamp before the epoch belongs to the
+    /// hour BEFORE it, and division rounding toward zero names the wrong one —
+    /// the trap `date_of` already documents, reachable here by the same route.
+    #[test]
+    fn an_hour_is_truncated_the_way_a_date_is() {
+        // Inside an hour, every instant maps to its start.
+        let hour = 480_000 * HOUR_MICROS;
+        assert_eq!(hour_of(hour), hour);
+        assert_eq!(hour_of(hour + 1), hour);
+        assert_eq!(hour_of(hour + HOUR_MICROS - 1), hour);
+        assert_eq!(hour_of(hour + HOUR_MICROS), hour + HOUR_MICROS);
+
+        // And before the epoch, where `/` would round toward zero and name the
+        // hour after the one the instant is in.
+        assert_eq!(
+            hour_of(-1),
+            -HOUR_MICROS,
+            "one microsecond before the epoch"
+        );
+        assert_eq!(hour_of(-HOUR_MICROS), -HOUR_MICROS);
+        assert_ne!(hour_of(-1), 0, "which is what plain division would give");
+    }
+
+    /// The cap keeps the NEWEST hours and says that it applied — a short
+    /// answer and a truncated one are different facts.
+    #[test]
+    fn the_cap_keeps_the_end_of_the_record() {
+        let nowhere = Path::new("/galata-tower-no-such-tape-root");
+        let found = rates(nowhere, 10);
+        assert_eq!(found.hours, 0);
+        assert!(!found.capped, "nothing to cap is not a cap");
+        assert!(found.buckets.is_empty());
+    }
+
+    /// The default is stated rather than derived, like every other cap here.
+    #[test]
+    fn the_default_hour_cap_is_stated() {
+        assert_eq!(DEFAULT_HOURS, 200);
+    }
+
     /// A window that runs backwards is refused here as `view` refuses it.
     #[test]
     fn a_backwards_window_is_refused_by_the_summary_too() {
@@ -1354,4 +1394,133 @@ fn missing_within(spans: &[(i64, i64)], from: i64, to: i64) -> i64 {
     // (ticker, series), so summing them overstates by the instrument count.
     let (total, ..) = union_micros(&mut clipped);
     total
+}
+
+/// One hour of one dataset.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct HourlyRows {
+    /// The venue.
+    pub venue: String,
+    /// The dataset.
+    pub kind: String,
+    /// The hour's start, in our clock.
+    pub hour_micros: i64,
+    /// How many rows arrived in it.
+    ///
+    /// **A count, not a rate per second.** The newest bucket holds whatever has
+    /// elapsed of it, and the oldest whatever was captured; a count is honestly
+    /// smaller for a partial hour where a normalised rate would extrapolate
+    /// from it.
+    pub rows: usize,
+}
+
+/// Rows per hour, newest first.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct Rates {
+    /// How many hours were returned.
+    pub hours: usize,
+    /// Whether a cap applied — so a short answer and a capped one differ.
+    pub capped: bool,
+    /// Newest first.
+    pub buckets: Vec<HourlyRows>,
+}
+
+/// Microseconds in an hour.
+const HOUR_MICROS: i64 = 3_600_000_000;
+
+/// The most hour-buckets a read returns when the caller names no limit.
+///
+/// **Stated, not derived.** A year is 8,760 buckets per dataset; an unbounded
+/// response is the defect `/v1/tape`'s cap exists to prevent, and there is no
+/// reason to relearn it here. Two hundred is a few days of one dataset, or a
+/// day of several.
+pub const DEFAULT_HOURS: usize = 200;
+
+/// How many rows the record holds, by hour.
+///
+/// **No baseline and no threshold.** The published answer to a feed that stays
+/// connected and delivers a trickle is a learned expected count and an alert on
+/// deviation; what counts as a normal hour for a venue is a thing the operator
+/// knows and this tower does not. Nine hours in a column, one of them two
+/// orders of magnitude smaller, is a fact anybody can read.
+pub fn rates(root: &Path, limit: usize) -> Rates {
+    let mut counted: BTreeMap<(String, String, i64), usize> = BTreeMap::new();
+
+    for kind in SERVED {
+        let scope = format!("kind={}", kind.as_str());
+        let scopes = [scope.as_str()];
+        if !galata_datawatch::tape::reader::unwritten(root, &scopes).is_empty() {
+            continue;
+        }
+        let Ok(reader) = galata_datawatch::tape::reader::Reader::open(root, &scopes) else {
+            continue;
+        };
+        let Ok(batches) = reader.view(galata_datawatch::tape::reader::Window {
+            kind,
+            from_micros: i64::MIN + 1,
+            to_micros: i64::MAX,
+            ticker: None,
+        }) else {
+            continue;
+        };
+        for batch in &batches {
+            use arrow::array::{Array, Int64Array, StringArray};
+            let venue = batch
+                .column_by_name("venue")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+            let recv = batch
+                .column_by_name("recv_micros")
+                .and_then(|c| c.as_any().downcast_ref::<Int64Array>());
+            let (Some(venue), Some(recv)) = (venue, recv) else {
+                continue;
+            };
+            for i in 0..batch.num_rows() {
+                if venue.is_null(i) || recv.is_null(i) {
+                    continue;
+                }
+                let key = (
+                    venue.value(i).to_owned(),
+                    kind.as_str().to_owned(),
+                    hour_of(recv.value(i)),
+                );
+                *counted.entry(key).or_insert(0) += 1;
+            }
+        }
+    }
+
+    let total = counted.len();
+    let mut buckets: Vec<HourlyRows> = counted
+        .into_iter()
+        .map(|((venue, kind, hour_micros), rows)| HourlyRows {
+            venue,
+            kind,
+            hour_micros,
+            rows,
+        })
+        .collect();
+    // Newest first, then venue and dataset — an operator looks at the end of
+    // the record, and the cap must keep that end.
+    buckets.sort_by(|a, b| {
+        b.hour_micros
+            .cmp(&a.hour_micros)
+            .then(a.venue.cmp(&b.venue))
+            .then(a.kind.cmp(&b.kind))
+    });
+    let capped = buckets.len() > limit;
+    buckets.truncate(limit);
+
+    Rates {
+        hours: total,
+        capped,
+        buckets,
+    }
+}
+
+/// The hour a timestamp falls in, truncated.
+///
+/// **`div_euclid`, not `/`** — the reason `date_of` already gives: a negative
+/// timestamp belongs to the hour BEFORE the epoch, and division rounding
+/// toward zero would name the wrong one.
+fn hour_of(micros: i64) -> i64 {
+    micros.div_euclid(HOUR_MICROS) * HOUR_MICROS
 }

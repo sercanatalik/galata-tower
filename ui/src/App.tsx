@@ -5,6 +5,7 @@ import Candles from './Candles'
 import Coverage from './Coverage'
 import Failures from './Failures'
 import Gaps from './Gaps'
+import Rates from './Rates'
 import Instruments from './Instruments'
 import Tape from './Tape'
 
@@ -170,6 +171,9 @@ export default function App() {
       </Boundary>
       <Boundary name="Coverage">
         <Coverage />
+      </Boundary>
+      <Boundary name="Rates">
+        <Rates />
       </Boundary>
       <Boundary name="Tape">
         <Tape />

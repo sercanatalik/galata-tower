@@ -170,6 +170,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/rates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * How many rows the record holds, by hour.
+         * @description **The failure nothing else here sees.** A socket that stays open and
+         *     delivers a trickle records no gap, leaves coverage at its full window, and
+         *     keeps every instrument's last-seen current — *"the TCP connection remains
+         *     nominally established, nothing arrives."* The partial case is worse than
+         *     the total one, because the total one is a gap.
+         *
+         *     No baseline, no threshold, no flag. What a normal hour holds for a venue is
+         *     the operator's knowledge, and an hour beside its neighbours is a shape they
+         *     can read.
+         */
+        get: operations["rates"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/status": {
         parameters: {
             query?: never;
@@ -473,6 +501,27 @@ export interface components {
             /** @description How many carried a `failures/` directory at all. */
             with_failures: number;
         };
+        /** @description One hour of one dataset. */
+        HourlyRows: {
+            /**
+             * Format: int64
+             * @description The hour's start, in our clock.
+             */
+            hour_micros: number;
+            /** @description The dataset. */
+            kind: string;
+            /**
+             * @description How many rows arrived in it.
+             *
+             *     **A count, not a rate per second.** The newest bucket holds whatever has
+             *     elapsed of it, and the oldest whatever was captured; a count is honestly
+             *     smaller for a partial hour where a normalised rate would extrapolate
+             *     from it.
+             */
+            rows: number;
+            /** @description The venue. */
+            venue: string;
+        };
         /** @description One instrument, as the record holds it. */
         Instrument: {
             /** @description Which dataset, as `/v1/tape/{kind}` spells it. */
@@ -531,6 +580,15 @@ export interface components {
         Partition: {
             /** @description Its path relative to the archive root. */
             path: string;
+        };
+        /** @description Rows per hour, newest first. */
+        Rates: {
+            /** @description Newest first. */
+            buckets: components["schemas"]["HourlyRows"][];
+            /** @description Whether a cap applied — so a short answer and a capped one differ. */
+            capped: boolean;
+            /** @description How many hours were returned. */
+            hours: number;
         };
         /**
          * @description One venue's status, exactly as it was published.
@@ -777,6 +835,32 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Partition"][];
+                };
+            };
+        };
+    };
+    rates: {
+        parameters: {
+            query?: {
+                /**
+                 * @description The most hour-buckets to return, newest first. Defaults to
+                 *     [`tape::DEFAULT_HOURS`].
+                 */
+                hours?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Rows per venue, dataset and hour, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Rates"];
                 };
             };
         };
