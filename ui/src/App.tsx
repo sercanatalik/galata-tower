@@ -1,5 +1,6 @@
 import { $api } from './contract/client'
 import { ageSeconds, useLiveStatus } from './live/status'
+import Tape from './Tape'
 
 /** A refusal, rendered. A blank page is the worst answer to a server that is not there. */
 function Refusal({ what, error }: { what: string; error: unknown }) {
@@ -124,6 +125,7 @@ export default function App() {
       <Status />
       <Partitions />
       <Overdue />
+      <Tape />
     </main>
   )
 }

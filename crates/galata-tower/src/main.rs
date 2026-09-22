@@ -9,6 +9,8 @@
 //! One process serves both halves: the API below, and `ui/dist` embedded at
 //! compile time, so there is no node process in a deployment.
 
+mod tape;
+
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -16,14 +18,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::State;
+use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
 use galata_broker::{BrokerIdentity, NatsSubscriber};
 use rust_embed::Embed;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{RwLock, broadcast};
 use tokio_stream::Stream;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
@@ -45,6 +47,8 @@ struct Screen;
 struct Tower {
     /// The archive root: `var/archive` in a datawatch deployment.
     archive: PathBuf,
+    /// The tape root: `var/tape` beside it.
+    tape: PathBuf,
     /// One subscription's snapshots, fanned to every connected screen.
     status: broadcast::Sender<Arc<Snapshot>>,
     /// The newest snapshot per venue.
@@ -351,6 +355,55 @@ fn event_for(received: Result<Arc<Snapshot>, BroadcastStreamRecvError>) -> Event
     }
 }
 
+/// The window a caller asks for, in venue micros — the clock the tape is
+/// sorted and dated by.
+#[derive(Deserialize, utoipa::IntoParams)]
+struct WindowQuery {
+    /// Start, inclusive.
+    from: i64,
+    /// End, exclusive.
+    to: i64,
+}
+
+/// One dataset, over a window, as the durable bound permits.
+///
+/// **Decimals arrive as strings.** See `tape.rs`: serialising with
+/// `arrow-json` would send them unquoted, and `JSON.parse` would round every
+/// price before anything could decline to.
+#[utoipa::path(
+    get,
+    path = "/v1/tape/{kind}",
+    params(("kind" = String, Path, description = "quotes, trades, candles, funding or marks"), WindowQuery),
+    responses(
+        (status = 200, description = "The window's rows, and the durable bound", body = tape::View),
+        (status = 400, description = "An unknown dataset, or a window that runs backwards", body = String),
+    ),
+)]
+async fn tape_view(
+    State(tower): State<Tower>,
+    UrlPath(kind): UrlPath<String>,
+    Query(window): Query<WindowQuery>,
+) -> Response {
+    let kind = match tape::kind_of(&kind) {
+        Ok(kind) => kind,
+        Err(refusal) => return (StatusCode::BAD_REQUEST, refusal.to_string()).into_response(),
+    };
+    // A listing walks the store and parquet is decoded, so this does not belong
+    // on the async executor.
+    let root = tower.tape.clone();
+    let read =
+        tokio::task::spawn_blocking(move || tape::view(&root, kind, window.from, window.to)).await;
+    match read {
+        Ok(Ok(view)) => Json(view).into_response(),
+        Ok(Err(refusal)) => (StatusCode::BAD_REQUEST, refusal.to_string()).into_response(),
+        Err(join) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("the read did not finish: {join}"),
+        )
+            .into_response(),
+    }
+}
+
 /// The document, described once by the routes that answer it.
 #[derive(OpenApi)]
 #[openapi(
@@ -372,6 +425,7 @@ fn router(tower: Tower) -> (Router, utoipa::openapi::OpenApi) {
         .routes(routes!(partitions))
         .routes(routes!(overdue))
         .routes(routes!(status))
+        .routes(routes!(tape_view))
         .with_state(tower)
         .split_for_parts()
 }
@@ -385,6 +439,7 @@ fn dump_openapi() -> Result<String, Box<dyn std::error::Error>> {
     let (status, _) = broadcast::channel(STATUS_BACKLOG);
     let (_, api) = router(Tower {
         archive: PathBuf::from("."),
+        tape: PathBuf::from("."),
         status,
         board: Arc::new(RwLock::new(BTreeMap::new())),
     });
@@ -412,8 +467,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let archive = std::env::var("GALATA_ARCHIVE").unwrap_or_else(|_| "var/archive".to_owned());
     let (status, _) = broadcast::channel(STATUS_BACKLOG);
     let board = Arc::new(RwLock::new(BTreeMap::new()));
+    // Beside the archive by default, which is how datawatch lays them out.
+    let tape = std::env::var("GALATA_TAPE").unwrap_or_else(|_| "var/tape".to_owned());
     let tower = Tower {
         archive: PathBuf::from(archive),
+        tape: PathBuf::from(tape),
         status: status.clone(),
         board: Arc::clone(&board),
     };

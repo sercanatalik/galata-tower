@@ -89,6 +89,66 @@
           }
         }
       }
+    },
+    "/v1/tape/{kind}": {
+      "get": {
+        "summary": "One dataset, over a window, as the durable bound permits.",
+        "description": "**Decimals arrive as strings.** See `tape.rs`: serialising with\n`arrow-json` would send them unquoted, and `JSON.parse` would round every\nprice before anything could decline to.",
+        "operationId": "tape_view",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "path",
+            "description": "quotes, trades, candles, funding or marks",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Start, inclusive.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "End, exclusive.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The window's rows, and the durable bound",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/View"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "An unknown dataset, or a window that runs backwards",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -166,6 +226,33 @@
           "venue": {
             "type": "string",
             "description": "The venue, taken from the subject."
+          }
+        }
+      },
+      "View": {
+        "type": "object",
+        "description": "A window's rows, and how far the store is durable.",
+        "required": [
+          "kind",
+          "bound",
+          "rows"
+        ],
+        "properties": {
+          "bound": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How far the store has durably written, in the tape's own sequence.\n\n**Returned with the rows on purpose.** Forty rows from a quiet hour and\nforty rows from a store that stopped there look identical without it."
+          },
+          "kind": {
+            "type": "string",
+            "description": "The dataset."
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "The rows, each a map of column to value. Decimals are strings."
           }
         }
       }

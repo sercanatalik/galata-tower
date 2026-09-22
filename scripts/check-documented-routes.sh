@@ -104,7 +104,14 @@ served = set(json.loads((root / "openapi.snapshot.json").read_text())["paths"])
 # A route is documented by appearing in the README at all -- the list is where
 # it belongs, and requiring a particular shape of line would be a formatting
 # rule rather than a documentation one.
-documented = set(re.findall(r"/v1/[a-z-]+", readme))
+#
+# THE PARAMETER SEGMENT IS PART OF THE PATH. `/v1/[a-z-]+` truncated
+# `/v1/tape/{kind}` to `/v1/tape`, so the first route with a parameter was
+# reported both as undocumented AND as documented-but-not-served -- one defect
+# read as two. Found by the first such route, which is late but is what the
+# guard is for.
+ROUTE = r"/v1/[a-z-]+(?:/\{[a-z_]+\})?"
+documented = set(re.findall(ROUTE, readme))
 for route in sorted(served - documented):
     problems.append(f"{route} is served and the README does not name it")
 for route in sorted(documented - served):

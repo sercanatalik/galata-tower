@@ -28,6 +28,14 @@ galata-wire = { path = "../galata-datawatch/crates/galata-wire" }
 # than venue transport and is why `check-no-capture-loop.sh` stopped forbidding
 # it (2026-09-22).
 galata-broker = { path = "../galata-datawatch/crates/galata-broker" }
+
+# The columnar format, direct rather than transitive. The tape's rows arrive as
+# RecordBatch and are serialised here -- see `tape.rs` for why not with
+# `arrow-json`. A columnar format is not a venue transport, so the wall is
+# indifferent to it.
+arrow = "60"
+# Refusals that name themselves, as everything else in this family does.
+thiserror = "2"
 # **`default-features = false`, and this is the whole dependency argument.**
 # The tape schemas, and none of the capture loop: a tree built without
 # `capture` links ZERO transport crates — 541 down to 279, measured in

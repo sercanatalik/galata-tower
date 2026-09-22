@@ -81,6 +81,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/tape/{kind}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One dataset, over a window, as the durable bound permits.
+         * @description **Decimals arrive as strings.** See `tape.rs`: serialising with
+         *     `arrow-json` would send them unquoted, and `JSON.parse` would round every
+         *     price before anything could decline to.
+         */
+        get: operations["tape_view"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -129,6 +151,21 @@ export interface components {
             subject: string;
             /** @description The venue, taken from the subject. */
             venue: string;
+        };
+        /** @description A window's rows, and how far the store is durable. */
+        View: {
+            /**
+             * Format: int64
+             * @description How far the store has durably written, in the tape's own sequence.
+             *
+             *     **Returned with the rows on purpose.** Forty rows from a quiet hour and
+             *     forty rows from a store that stopped there look identical without it.
+             */
+            bound: number;
+            /** @description The dataset. */
+            kind: string;
+            /** @description The rows, each a map of column to value. Decimals are strings. */
+            rows: Record<string, never>[];
         };
     };
     responses: never;
@@ -215,6 +252,43 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Snapshot"];
+                };
+            };
+        };
+    };
+    tape_view: {
+        parameters: {
+            query: {
+                /** @description Start, inclusive. */
+                from: number;
+                /** @description End, exclusive. */
+                to: number;
+            };
+            header?: never;
+            path: {
+                /** @description quotes, trades, candles, funding or marks */
+                kind: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The window's rows, and the durable bound */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["View"];
+                };
+            };
+            /** @description An unknown dataset, or a window that runs backwards */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
                 };
             };
         };

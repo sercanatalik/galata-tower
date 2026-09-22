@@ -18,7 +18,15 @@ than from anything a capture process says about itself:
   GET /v1/partitions   the partitions the record holds
   GET /v1/overdue      closed days still holding more segments than compaction left
   GET /v1/status       every venue's live status, as server-sent events
+  GET /v1/tape/{kind}  a window of one dataset, bounded by what is durable
 ```
+
+**A decimal crosses as a string.** Every price and size in the tape is
+`Decimal128(38, 18)`, and the tape route sends them quoted — `"80770.000000..."`,
+not `80770.0`. Sent as JSON numbers they would be doubles before the browser
+could decline to round them, and `check-no-float-money.sh` could not see it,
+because nothing would have converted anything. `arrow-json`'s writer emits them
+unquoted, which is why this tower serialises the rows itself.
 
 `scripts/check-documented-routes.sh` holds that list to the contract, in both
 directions: a route added without a line here fails, and so does a line for a
@@ -98,8 +106,10 @@ this tree — so a deployment runs no node process.
 GALATA_ARCHIVE=../galata-datawatch/var/archive cargo run
 ```
 
-`GALATA_TOWER_LISTEN` moves it off `127.0.0.1:8777`, and `GALATA_BROKER` off
-`127.0.0.1:4222`. Loopback is the default for both because serving other
+`GALATA_TAPE` points at the tape, `var/tape` by default, which
+`galata-tape-rebuild` writes beside the archive.
+`GALATA_TOWER_LISTEN` moves the tower off `127.0.0.1:8777`, and `GALATA_BROKER`
+off `127.0.0.1:4222`. Loopback is the default for both because serving other
 machines, and reaching another machine's bus, are deployment decisions — made
 by setting these rather than by the binary assuming them.
 
