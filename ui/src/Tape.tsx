@@ -5,6 +5,9 @@ import { dec, fmt } from './contract/money'
 
 /** A venue-micros window ending now, so the view shows the latest of whatever is there. */
 /** The windows offered, by name. No string is turned into a number anywhere. */
+/** How many rows the table draws, and therefore how many it asks for. */
+const ROWS = 40
+
 const WINDOWS = {
   hour: 3600,
   day: 24 * 3600,
@@ -38,7 +41,9 @@ export default function Tape() {
   const [span, setSpan] = useState<WindowName>('hour')
   const window = windowOf(span)
   const { data, error, isPending } = $api.useQuery('get', '/v1/tape/{kind}', {
-    params: { path: { kind: 'quotes' }, query: window },
+    // Ask for what is drawn. The route caps anyway; asking is what stops
+    // eleven megabytes crossing to render forty rows.
+    params: { path: { kind: 'quotes' }, query: { ...window, limit: ROWS } },
   })
 
   if (error) {
@@ -59,7 +64,8 @@ export default function Tape() {
 
   // Newest first, and bounded for the eye: the window bounds the read, this
   // bounds the render.
-  const rows = [...(data?.rows ?? [])].slice(-40).reverse()
+  // The route returns the newest already; this only reverses them for the eye.
+  const rows = [...(data?.rows ?? [])].reverse()
 
   return (
     <section>

@@ -58,6 +58,12 @@ pub enum TapeError {
         /// What there is.
         known: String,
     },
+    /// A cap of no rows.
+    ///
+    /// **A refusal, in the manner of a backwards window.** Asking for nothing
+    /// is a question that should not have been asked.
+    #[error("a limit of zero asks for no rows")]
+    NoRows,
     /// A window whose end is not after its start.
     ///
     /// **A refusal, not an empty list.** An empty array is an answer; a
@@ -116,6 +122,19 @@ pub fn kind_of(name: &str) -> Result<Kind, TapeError> {
         })
 }
 
+/// The most rows a read returns when the caller names no limit.
+///
+/// **Stated, not derived, and it does NOT fit a minute.** An earlier draft of
+/// this comment claimed it did; a sixty-second window of this tape is 1,343
+/// rows, and a test written on that claim failed. At roughly 290 bytes a row
+/// the cap is about 290 KiB — the point is to bound an unbounded read, not to
+/// accommodate any particular window. A caller who wants a minute asks for it
+/// and gets it; a caller who forgets gets 290 KiB instead of eleven megabytes.
+///
+/// It applies whether or not it is asked for, because a protection that must be
+/// requested protects nobody: the caller who forgets is the caller who needed it.
+pub const DEFAULT_LIMIT: usize = 1_000;
+
 /// A window's rows, and how far the store is durable.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct View {
@@ -126,7 +145,17 @@ pub struct View {
     /// **Returned with the rows on purpose.** Forty rows from a quiet hour and
     /// forty rows from a store that stopped there look identical without it.
     pub bound: i64,
+    /// How many rows the window holds, before any cap.
+    ///
+    /// **Always present, not only when a cap applied.** A field that appears
+    /// conditionally is one callers learn to ignore, and this is the only thing
+    /// distinguishing a capped read from a quiet window.
+    pub total: usize,
     /// The rows, each a map of column to value. Decimals are strings.
+    ///
+    /// When a cap applies these are the NEWEST in the window — a reader
+    /// watching a tape wants its end — and `total` is what makes that
+    /// truncation visible rather than inferred.
     #[schema(value_type = Vec<Object>)]
     pub rows: Vec<Value>,
 }
@@ -175,6 +204,34 @@ fn value_at(
     })
 }
 
+/// The newest `limit` rows, formatted.
+///
+/// Only the tail is formatted. The batches are walked from the end until
+/// enough rows are in hand, so a cap of forty over a window of forty thousand
+/// does the work of forty.
+fn newest(batches: &[RecordBatch], limit: usize) -> Result<Vec<Value>, TapeError> {
+    let total: usize = batches.iter().map(|batch| batch.num_rows()).sum();
+    let skip = total.saturating_sub(limit);
+    let mut seen = 0usize;
+    let mut tail: Vec<&RecordBatch> = Vec::new();
+    let mut offset_in_first = 0usize;
+    for batch in batches {
+        let next = seen + batch.num_rows();
+        if next > skip {
+            if tail.is_empty() {
+                offset_in_first = skip.saturating_sub(seen);
+            }
+            tail.push(batch);
+        }
+        seen = next;
+    }
+    let mut out = rows(&tail.into_iter().cloned().collect::<Vec<_>>())?;
+    if offset_in_first > 0 && offset_in_first <= out.len() {
+        out.drain(..offset_in_first);
+    }
+    Ok(out)
+}
+
 /// Batches as rows, decimals as strings.
 pub fn rows(batches: &[RecordBatch]) -> Result<Vec<Value>, TapeError> {
     let options = FormatOptions::new().with_display_error(true);
@@ -208,7 +265,10 @@ pub fn rows(batches: &[RecordBatch]) -> Result<Vec<Value>, TapeError> {
 }
 
 /// A window of one dataset, as the durable bound permits.
-pub fn view(root: &Path, kind: Kind, from: i64, to: i64) -> Result<View, TapeError> {
+pub fn view(root: &Path, kind: Kind, from: i64, to: i64, limit: usize) -> Result<View, TapeError> {
+    if limit == 0 {
+        return Err(TapeError::NoRows);
+    }
     if to <= from {
         return Err(TapeError::Backwards { from, to });
     }
@@ -242,10 +302,16 @@ pub fn view(root: &Path, kind: Kind, from: i64, to: i64) -> Result<View, TapeErr
     let batches = reader.view(window).map_err(|error| TapeError::Unreadable {
         detail: error.to_string(),
     })?;
+    // Counted with `num_rows`, which is a field read. The formatting loop is
+    // the expensive part — 46ms for a whole tape against 6ms to decode it — so
+    // the total costs approximately nothing, which is what makes it affordable
+    // to report on every read.
+    let total: usize = batches.iter().map(|batch| batch.num_rows()).sum();
     Ok(View {
         kind: kind.as_str().to_owned(),
         bound: reader.bound().position,
-        rows: rows(&batches)?,
+        total,
+        rows: newest(&batches, limit)?,
     })
 }
 
@@ -276,7 +342,8 @@ mod tests {
             return;
         };
         // The whole of 2026-09-20 in venue micros, and well past it.
-        let view = view(&root, Kind::Quotes, 0, i64::MAX / 2).expect("the tape reads");
+        let view =
+            view(&root, Kind::Quotes, 0, i64::MAX / 2, DEFAULT_LIMIT).expect("the tape reads");
         assert!(!view.rows.is_empty(), "the tape held no quotes to check");
 
         let row = view.rows[0].as_object().expect("a row is an object");
@@ -303,11 +370,78 @@ mod tests {
         );
     }
 
+    /// **A capped read says what it left out.** Forty rows back, and a total
+    /// that is very much larger — which is the only thing distinguishing this
+    /// from a quiet window.
+    #[test]
+    fn a_capped_read_reports_the_total_it_capped() {
+        let Some(root) = tape_root() else {
+            eprintln!("SKIPPED: no tape");
+            return;
+        };
+        let capped = view(&root, Kind::Quotes, 0, i64::MAX / 2, 40).expect("the tape reads");
+        assert_eq!(capped.rows.len(), 40, "the cap applies");
+        assert!(
+            capped.total > 40,
+            "and the total says what was left out: {}",
+            capped.total
+        );
+
+        // The newest, not the oldest: a reader watching a tape wants its end.
+        let all = view(&root, Kind::Quotes, 0, i64::MAX / 2, usize::MAX).expect("reads");
+        assert_eq!(
+            all.total, capped.total,
+            "the total does not depend on the cap"
+        );
+        let last = all.rows.last().expect("rows");
+        assert_eq!(
+            capped.rows.last(),
+            Some(last),
+            "a capped read must end where the window ends"
+        );
+    }
+
+    /// An uncapped-but-small window reports a total equal to what it returned.
+    #[test]
+    fn an_uncapped_window_reports_what_it_returned() {
+        let Some(root) = tape_root() else {
+            eprintln!("SKIPPED: no tape");
+            return;
+        };
+        // FIVE seconds. Sixty was the first attempt and it is 1,343 rows —
+        // above the default cap, which is how the comment claiming a minute
+        // fits was found to be wrong.
+        let view = view(
+            &root,
+            Kind::Quotes,
+            1_789_938_867_000_000,
+            1_789_938_872_000_000,
+            DEFAULT_LIMIT,
+        )
+        .expect("reads");
+        assert!(!view.rows.is_empty(), "the slice held rows");
+        assert!(
+            view.rows.len() < DEFAULT_LIMIT,
+            "the window must be under the cap for this to test anything: {}",
+            view.rows.len()
+        );
+        assert_eq!(view.total, view.rows.len(), "nothing was capped");
+    }
+
+    /// A cap of nothing is a refusal, like a backwards window.
+    #[test]
+    fn a_limit_of_zero_is_refused() {
+        let root = std::path::PathBuf::from(".");
+        let refused = view(&root, Kind::Quotes, 0, 100, 0).expect_err("zero must refuse");
+        assert!(matches!(refused, TapeError::NoRows), "got {refused:?}");
+    }
+
     /// A backwards window is refused, not answered with an empty list.
     #[test]
     fn a_backwards_window_is_refused() {
         let root = std::path::PathBuf::from(".");
-        let refused = view(&root, Kind::Quotes, 100, 50).expect_err("backwards must refuse");
+        let refused =
+            view(&root, Kind::Quotes, 100, 50, DEFAULT_LIMIT).expect_err("backwards must refuse");
         assert!(
             matches!(refused, TapeError::Backwards { .. }),
             "got {refused:?}"

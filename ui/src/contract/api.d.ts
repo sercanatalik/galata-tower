@@ -164,8 +164,22 @@ export interface components {
             bound: number;
             /** @description The dataset. */
             kind: string;
-            /** @description The rows, each a map of column to value. Decimals are strings. */
+            /**
+             * @description The rows, each a map of column to value. Decimals are strings.
+             *
+             *     When a cap applies these are the NEWEST in the window — a reader
+             *     watching a tape wants its end — and `total` is what makes that
+             *     truncation visible rather than inferred.
+             */
             rows: Record<string, never>[];
+            /**
+             * @description How many rows the window holds, before any cap.
+             *
+             *     **Always present, not only when a cap applied.** A field that appears
+             *     conditionally is one callers learn to ignore, and this is the only thing
+             *     distinguishing a capped read from a quiet window.
+             */
+            total: number;
         };
     };
     responses: never;
@@ -263,6 +277,8 @@ export interface operations {
                 from: number;
                 /** @description End, exclusive. */
                 to: number;
+                /** @description The most rows to return. Defaults to `tape::DEFAULT_LIMIT`. */
+                limit?: number | null;
             };
             header?: never;
             path: {

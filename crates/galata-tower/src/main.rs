@@ -363,6 +363,8 @@ struct WindowQuery {
     from: i64,
     /// End, exclusive.
     to: i64,
+    /// The most rows to return. Defaults to `tape::DEFAULT_LIMIT`.
+    limit: Option<usize>,
 }
 
 /// One dataset, over a window, as the durable bound permits.
@@ -391,8 +393,16 @@ async fn tape_view(
     // A listing walks the store and parquet is decoded, so this does not belong
     // on the async executor.
     let root = tower.tape.clone();
-    let read =
-        tokio::task::spawn_blocking(move || tape::view(&root, kind, window.from, window.to)).await;
+    let read = tokio::task::spawn_blocking(move || {
+        tape::view(
+            &root,
+            kind,
+            window.from,
+            window.to,
+            window.limit.unwrap_or(tape::DEFAULT_LIMIT),
+        )
+    })
+    .await;
     match read {
         Ok(Ok(view)) => Json(view).into_response(),
         Ok(Err(refusal)) => (StatusCode::BAD_REQUEST, refusal.to_string()).into_response(),
