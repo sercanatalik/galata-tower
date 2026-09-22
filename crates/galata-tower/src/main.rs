@@ -38,6 +38,16 @@ use utoipa_axum::routes;
 /// **One binary serves the API and the screen**, so a deployment runs no node
 /// process. The folder must exist when this compiles, which is why `ui/dist`
 /// carries a placeholder in the tree rather than being generated on demand.
+///
+/// **A debug build does not embed it.** `rust-embed` reads the folder from
+/// disk at run time unless `debug-embed` is on, so `cargo run` serves whatever
+/// `ui/dist` holds right now and a rebuild is not needed to see a screen
+/// change. A release build embeds, through `include_bytes!` — which cargo
+/// records as a real dependency, so a release DOES rebuild when the folder
+/// changes. Both halves were measured on 2026-09-22, after a day in which a
+/// stale screen was blamed for what turned out to be a silenced `tsc -b`
+/// failure leaving `ui/dist` unwritten. Neither half needs a build script, and
+/// one was written and thrown away on the strength of that wrong guess.
 #[derive(Embed)]
 #[folder = "$CARGO_MANIFEST_DIR/../../ui/dist"]
 struct Screen;
