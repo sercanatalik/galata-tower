@@ -232,21 +232,60 @@ async fn partitions(State(tower): State<Tower>) -> Json<Vec<Partition>> {
     )
 }
 
+/// How many segments a closed partition may hold before it is worth naming.
+///
+/// **One, and that is not arbitrary.** Compaction leaves one segment per
+/// partition, so *more than one* is exactly *not compacted since it closed*.
+/// Anything above this would be a judgement about how much neglect is
+/// acceptable, which is the operator's — which is why it is a parameter.
+const COMPACTED_TO: usize = 1;
+
+/// What a caller may narrow the overdue listing by.
+#[derive(Deserialize, utoipa::IntoParams)]
+struct OverdueQuery {
+    /// The most segments a closed partition may hold. Defaults to
+    /// [`COMPACTED_TO`]. Zero lists every closed partition holding anything,
+    /// which shows the shape of the store rather than only its problems.
+    max_segments: Option<usize>,
+}
+
 /// Closed days still holding more segments than compaction should have left.
 ///
-/// `max_segments` is the caller's threshold, because what counts as too many is
-/// an operator's judgement and this reports rather than judges.
+/// **Closed means closed.** Until 2026-09-22 this passed `"9999-99-99"` as the
+/// current day, so every dated partition counted as closed — including the one
+/// being written. Six of twelve rows on the screen were the day still being
+/// captured, which holds many small segments by design, under a heading
+/// reading *Closed*.
+///
+/// That is the drift the calendar module warns about in its own header: *"a
+/// second implementation does not fail when it drifts — it disagrees."* The
+/// day is now `date_of` on this tower's clock — the same function that NAMES
+/// the partitions — so there is one calendar and one definition of closed,
+/// shared with the `galata-compact` that acts on it.
+///
+/// It also cost the surface its purpose: this exists to catch *"the wrong var
+/// directory, the stale binary and the `--dry-run` left in"*, and all three
+/// were buried under guaranteed daily noise.
 #[utoipa::path(
     get,
     path = "/v1/overdue",
+    params(OverdueQuery),
     responses((status = 200, description = "Closed days still holding segments", body = Vec<Overdue>)),
 )]
-async fn overdue(State(tower): State<Tower>) -> Json<Vec<Overdue>> {
+async fn overdue(
+    State(tower): State<Tower>,
+    Query(query): Query<OverdueQuery>,
+) -> Json<Vec<Overdue>> {
     let root = tower.archive.clone();
+    // **The clock is read here, and the judgement takes the day.** The library
+    // splits these for a stated reason — so the rule stays replayable and a
+    // test can drive it without waiting for midnight — and the same split is
+    // what makes the boundary testable at all.
+    let today = today_utc();
+    let max_segments = query.max_segments.unwrap_or(COMPACTED_TO);
     // A listing walks the store, so it does not belong on the async executor.
     let found = tokio::task::spawn_blocking(move || {
-        let today = "9999-99-99"; // Every dated partition is closed against this.
-        galata_segments::overdue_closed(&root, today, 1)
+        galata_segments::overdue_closed(&root, &today, max_segments)
     })
     .await
     .unwrap_or_default();
@@ -263,6 +302,24 @@ async fn overdue(State(tower): State<Tower>) -> Json<Vec<Overdue>> {
             })
             .collect(),
     )
+}
+
+/// The current UTC day, as the partitions spell it.
+///
+/// `galata_datawatch::date_of` and nothing else: a partition is NAMED by that
+/// function, and whether it is closed is decided by comparing against it. A
+/// second way of formatting the day would not fail when it drifted — it would
+/// disagree, which is the failure this whole route just had.
+fn today_utc() -> String {
+    let micros = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|since| i64::try_from(since.as_micros()).unwrap_or(i64::MAX))
+        // Before the epoch is a clock that is very wrong; naming day zero is
+        // the conservative answer, because it makes every partition closed
+        // rather than none, and an operator seeing the whole store listed will
+        // look at the clock.
+        .unwrap_or(0);
+    galata_datawatch::date_of(micros)
 }
 
 /// What this tower reads.
@@ -1229,6 +1286,104 @@ mod tests {
             tape::bounds(&nowhere).is_empty(),
             "a root that is not there must be silence, not a refusal"
         );
+    }
+
+    /// **The day is named by the same function that names the partitions.**
+    /// A second way of formatting it would not fail when it drifted, it would
+    /// disagree — which is precisely what `"9999-99-99"` did, every day.
+    #[test]
+    fn today_is_spelled_the_way_a_partition_is() {
+        let today = today_utc();
+        assert_eq!(
+            today.len(),
+            10,
+            "YYYY-MM-DD, as a date= level holds it: {today}"
+        );
+        assert_eq!(
+            today,
+            galata_datawatch::date_of(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| i64::try_from(d.as_micros()).unwrap_or(i64::MAX))
+                    .unwrap_or(0)
+            ),
+            "one calendar, not two"
+        );
+    }
+
+    /// **Lexicographic is chronological**, which is the one thing the
+    /// `YYYY-MM-DD` partition format buys — and it is what `overdue_closed`
+    /// relies on to decide *strictly before*.
+    #[test]
+    fn the_day_order_the_listing_depends_on_holds() {
+        // Around a month end and a year end, where a shorter format breaks.
+        assert!("2026-09-21" < "2026-09-22");
+        assert!("2026-09-30" < "2026-10-01");
+        assert!("2026-12-31" < "2027-01-01");
+        // And the boundary itself: today is NOT strictly before today.
+        assert!(!("2026-09-22" < "2026-09-22"));
+    }
+
+    /// The sentinel this change removed made every day closed. Held so it
+    /// cannot come back looking harmless.
+    #[test]
+    fn no_day_can_precede_the_sentinel_that_was_here() {
+        // Why `"9999-99-99"` listed the day being written: every real date
+        // sorts before it, so *strictly before* selected everything.
+        assert!(today_utc().as_str() < "9999-99-99");
+        assert!("2026-09-22" < "9999-99-99");
+    }
+
+    /// One segment is a compacted partition, so the default must not name it.
+    #[test]
+    fn the_default_threshold_is_what_compaction_leaves() {
+        assert_eq!(
+            COMPACTED_TO, 1,
+            "compaction leaves one segment, and `overdue_closed` keeps count > max"
+        );
+    }
+
+    /// The archive this tower is pointed at, where there is one.
+    fn archive_root() -> Option<PathBuf> {
+        let root = PathBuf::from("../../../galata-datawatch/var/archive");
+        root.is_dir().then_some(root)
+    }
+
+    /// **The claim this change exists for, against the real store.**
+    ///
+    /// Before it, this archive listed six partitions dated the day still being
+    /// captured, under a heading reading *Closed*. Checked against a real
+    /// directory rather than against the code that filters it, because the
+    /// defect was in what was HANDED to that filter.
+    #[test]
+    fn no_partition_dated_today_is_ever_listed() {
+        let Some(root) = archive_root() else {
+            eprintln!("SKIPPED: no archive to read");
+            return;
+        };
+        let today = today_utc();
+        let listed = galata_segments::overdue_closed(&root, &today, COMPACTED_TO);
+        for (path, segments) in &listed {
+            assert!(
+                !path
+                    .display()
+                    .to_string()
+                    .contains(&format!("date={today}")),
+                "{} is today's partition and is still being written, yet it is \
+                 listed as closed with {segments} segments",
+                path.display()
+            );
+        }
+        // And the filter is doing something: every row named is over the
+        // threshold. A listing that silently returned nothing would pass the
+        // assertion above while proving nothing.
+        for (path, segments) in &listed {
+            assert!(
+                *segments > COMPACTED_TO,
+                "{} has {segments}",
+                path.display()
+            );
+        }
     }
 
     /// `say` writes both: the stored state for whoever connects next, and the

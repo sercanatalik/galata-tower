@@ -52,8 +52,21 @@ export interface paths {
         };
         /**
          * Closed days still holding more segments than compaction should have left.
-         * @description `max_segments` is the caller's threshold, because what counts as too many is
-         *     an operator's judgement and this reports rather than judges.
+         * @description **Closed means closed.** Until 2026-09-22 this passed `"9999-99-99"` as the
+         *     current day, so every dated partition counted as closed — including the one
+         *     being written. Six of twelve rows on the screen were the day still being
+         *     captured, which holds many small segments by design, under a heading
+         *     reading *Closed*.
+         *
+         *     That is the drift the calendar module warns about in its own header: *"a
+         *     second implementation does not fail when it drifts — it disagrees."* The
+         *     day is now `date_of` on this tower's clock — the same function that NAMES
+         *     the partitions — so there is one calendar and one definition of closed,
+         *     shared with the `galata-compact` that acts on it.
+         *
+         *     It also cost the surface its purpose: this exists to catch *"the wrong var
+         *     directory, the stale binary and the `--dry-run` left in"*, and all three
+         *     were buried under guaranteed daily noise.
          */
         get: operations["overdue"];
         put?: never;
@@ -425,7 +438,14 @@ export interface operations {
     };
     overdue: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description The most segments a closed partition may hold. Defaults to
+                 *     [`COMPACTED_TO`]. Zero lists every closed partition holding anything,
+                 *     which shows the shape of the store rather than only its problems.
+                 */
+                max_segments?: number | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;

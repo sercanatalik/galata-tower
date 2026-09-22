@@ -107,8 +107,23 @@
     "/v1/overdue": {
       "get": {
         "summary": "Closed days still holding more segments than compaction should have left.",
-        "description": "`max_segments` is the caller's threshold, because what counts as too many is\nan operator's judgement and this reports rather than judges.",
+        "description": "**Closed means closed.** Until 2026-09-22 this passed `\"9999-99-99\"` as the\ncurrent day, so every dated partition counted as closed — including the one\nbeing written. Six of twelve rows on the screen were the day still being\ncaptured, which holds many small segments by design, under a heading\nreading *Closed*.\n\nThat is the drift the calendar module warns about in its own header: *\"a\nsecond implementation does not fail when it drifts — it disagrees.\"* The\nday is now `date_of` on this tower's clock — the same function that NAMES\nthe partitions — so there is one calendar and one definition of closed,\nshared with the `galata-compact` that acts on it.\n\nIt also cost the surface its purpose: this exists to catch *\"the wrong var\ndirectory, the stale binary and the `--dry-run` left in\"*, and all three\nwere buried under guaranteed daily noise.",
         "operationId": "overdue",
+        "parameters": [
+          {
+            "name": "max_segments",
+            "in": "query",
+            "description": "The most segments a closed partition may hold. Defaults to\n[`COMPACTED_TO`]. Zero lists every closed partition holding anything,\nwhich shows the shape of the store rather than only its problems.",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Closed days still holding segments",
