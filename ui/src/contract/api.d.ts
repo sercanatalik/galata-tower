@@ -128,6 +128,15 @@ export interface components {
          *     contract's schema would buy nothing at that rate.
          */
         Board: {
+            /**
+             * @description Each kind's durable bound, for the kinds that have written anything.
+             *
+             *     Here as well as in the event, for the same reason the broker's state
+             *     is: the event says it MOVED, and this says where it STANDS. A browser
+             *     connecting into a quiet hour would otherwise learn nothing until the
+             *     next move, which may never come.
+             */
+            bounds: Record<string, never>;
             /** @description Whether these venues are current or a record of an interrupted stream. */
             broker: components["schemas"]["BrokerState"];
             /** @description Every venue seen since the tower started, newest snapshot each. */
@@ -191,6 +200,16 @@ export interface components {
             subject: string;
             /** @description The venue, taken from the subject. */
             venue: string;
+        };
+        /** @description A kind's tape has a new durable bound. */
+        TapeMoved: {
+            /**
+             * Format: int64
+             * @description The new durable position.
+             */
+            bound: number;
+            /** @description Which dataset, as `/v1/tape/{kind}` spells it. */
+            kind: string;
         };
         /** @description A window's rows, and how far the store is durable. */
         View: {
@@ -299,7 +318,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description A server-sent event stream: a board frame on connect, then status, broker and lagged events */
+            /** @description A server-sent event stream: a board frame on connect, then status, broker, tape and lagged events */
             200: {
                 headers: {
                     [name: string]: unknown;

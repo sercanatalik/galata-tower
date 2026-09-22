@@ -23,6 +23,7 @@
 //! without going through a float, and it is what `arrow-json` uses. Only the
 //! quoting changes.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use arrow::array::{Array, RecordBatch};
@@ -104,6 +105,36 @@ pub enum TapeError {
         /// Its type.
         data_type: String,
     },
+}
+
+/// Every served kind's durable bound, for the kinds that have written anything.
+///
+/// **The cheap half.** `Reader::open` plus `bound()` reads parquet footers and
+/// nothing else: 53µs against the real tape, where decoding the whole of it
+/// into a view is 2.85ms. That ratio is the whole reason the tower watches this
+/// on every browser's behalf instead of each browser asking — see
+/// `examples/cost-of-a-bound.rs`, which is how those two numbers were got and
+/// is kept runnable so the next person can check them rather than trust them.
+///
+/// A kind that has written nothing is absent from the map. That is an answer,
+/// not a failure: [`view`] refuses it because a caller asked for ROWS, and this
+/// caller asked whether anything had arrived.
+pub fn bounds(root: &Path) -> BTreeMap<String, i64> {
+    let mut found = BTreeMap::new();
+    for kind in SERVED {
+        let scope = format!("kind={}", kind.as_str());
+        let scopes = [scope.as_str()];
+        if !galata_datawatch::tape::reader::unwritten(root, &scopes).is_empty() {
+            continue;
+        }
+        // A root that is not there, or a store that will not open, is silence
+        // here. The caller decides whether silence is worth a log line; doing
+        // it here would do it once a second.
+        if let Ok(reader) = galata_datawatch::tape::reader::Reader::open(root, &scopes) {
+            found.insert(kind.as_str().to_owned(), reader.bound().position);
+        }
+    }
+    found
 }
 
 /// A kind, from the name the tape writes for it.

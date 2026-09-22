@@ -78,7 +78,7 @@
         "operationId": "status",
         "responses": {
           "200": {
-            "description": "A server-sent event stream: a board frame on connect, then status, broker and lagged events",
+            "description": "A server-sent event stream: a board frame on connect, then status, broker, tape and lagged events",
             "content": {
               "application/json": {
                 "schema": {
@@ -192,9 +192,14 @@
         "description": "What a browser is handed on connect, and after a gap.\n\nThe venues are cloned rather than borrowed: a board frame is sent once per\nconnection and once per lag, not once per snapshot, and a lifetime in the\ncontract's schema would buy nothing at that rate.",
         "required": [
           "broker",
+          "bounds",
           "venues"
         ],
         "properties": {
+          "bounds": {
+            "type": "object",
+            "description": "Each kind's durable bound, for the kinds that have written anything.\n\nHere as well as in the event, for the same reason the broker's state\nis: the event says it MOVED, and this says where it STANDS. A browser\nconnecting into a quiet hour would otherwise learn nothing until the\nnext move, which may never come."
+          },
           "broker": {
             "$ref": "#/components/schemas/BrokerState",
             "description": "Whether these venues are current or a record of an interrupted stream."
@@ -287,6 +292,25 @@
           "venue": {
             "type": "string",
             "description": "The venue, taken from the subject."
+          }
+        }
+      },
+      "TapeMoved": {
+        "type": "object",
+        "description": "A kind's tape has a new durable bound.",
+        "required": [
+          "kind",
+          "bound"
+        ],
+        "properties": {
+          "bound": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The new durable position."
+          },
+          "kind": {
+            "type": "string",
+            "description": "Which dataset, as `/v1/tape/{kind}` spells it."
           }
         }
       },

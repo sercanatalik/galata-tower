@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useChart } from './charts/useChart'
 import { $api } from './contract/client'
 import { dec, plot } from './contract/money'
+import { useRecordAdvances } from './live/status'
 
 /**
  * Rows are not candles.
@@ -39,6 +40,9 @@ type Row = Record<string, unknown>
  */
 export default function Candles() {
   const { container, chart } = useChart(220)
+  // The same rule as the tape table: told when the record moves, and refetched
+  // then. A chart that stopped an hour ago looks exactly like a live one.
+  const advanced = useRecordAdvances('candles')
   const [ticker, setTicker] = useState<string | null>(null)
 
   const { data, error } = $api.useQuery('get', '/v1/tape/{kind}', {
@@ -128,6 +132,10 @@ export default function Candles() {
           </select>
         ) : null}{' '}
         · the newest the tape holds · a candle is republished as it forms, so rows outnumber candles
+        {' · '}
+        {advanced === null
+          ? 'the record has not moved since this page loaded'
+          : `advanced ${advanced}s ago`}
       </p>
       {data && rows.length === 0 ? (
         <p className="muted">No candles in that window.</p>

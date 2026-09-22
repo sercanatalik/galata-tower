@@ -1,6 +1,7 @@
 import { useState } from 'react'
 
 import { $api } from './contract/client'
+import { useRecordAdvances } from './live/status'
 import { dec, fmt } from './contract/money'
 
 /**
@@ -39,6 +40,11 @@ export default function Tape() {
   // is a row limit on the read, which is a change to the route rather than to
   // this component and is named rather than smuggled in here.
   const [count, setCount] = useState<CountName>('40')
+  // Told when the record moves, and refetched then. Nothing polls: asking the
+  // tower whether the tape grew is 53µs and it asks once for everybody, where
+  // a refetchInterval here would decode 39,231 rows on a timer to usually
+  // learn nothing.
+  const advanced = useRecordAdvances('quotes')
   const { data, error, isPending } = $api.useQuery('get', '/v1/tape/{kind}', {
     // Ask for what is drawn. The route caps anyway; asking is what stops
     // eleven megabytes crossing to render forty rows.
@@ -80,6 +86,13 @@ export default function Tape() {
         </select>{' '}
         quotes
         · durable to stream_seq {data?.bound ?? '…'}
+        {/* **A stale table and a current one look identical**, which is the
+            whole reason this is here. Measured locally against a local
+            arrival, never by subtracting the record's clock from ours. */}
+        {' · '}
+        {advanced === null
+          ? 'the record has not moved since this page loaded'
+          : `advanced ${advanced}s ago`}
       </p>
       {isPending ? <p className="muted">reading the tape…</p> : null}
       {data && data.rows.length === 0 ? (

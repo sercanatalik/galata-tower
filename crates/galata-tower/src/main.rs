@@ -70,6 +70,8 @@ struct Tower {
     board: Arc<RwLock<BTreeMap<String, Arc<Snapshot>>>>,
     /// Whether there is a broker at all, for a browser that connects mid-outage.
     broker: Arc<RwLock<BrokerState>>,
+    /// Each kind's durable bound, as the watch last read it.
+    bounds: Arc<RwLock<BTreeMap<String, i64>>>,
 }
 
 /// One thing the tower has to say.
@@ -81,6 +83,19 @@ struct Tower {
 enum Live {
     Status(Arc<Snapshot>),
     Broker(BrokerState),
+    /// One kind's tape grew. **Not the rows** — the route that serves them
+    /// already caps them, and a browser that does not draw this kind should
+    /// not pay to receive it.
+    Tape(TapeMoved),
+}
+
+/// A kind's tape has a new durable bound.
+#[derive(Clone, Debug, Serialize, ToSchema)]
+struct TapeMoved {
+    /// Which dataset, as `/v1/tape/{kind}` spells it.
+    kind: String,
+    /// The new durable position.
+    bound: i64,
 }
 
 /// Whether the tower has a status subscription — **reported, not judged**.
@@ -114,6 +129,14 @@ struct BrokerState {
 struct Board {
     /// Whether these venues are current or a record of an interrupted stream.
     broker: BrokerState,
+    /// Each kind's durable bound, for the kinds that have written anything.
+    ///
+    /// Here as well as in the event, for the same reason the broker's state
+    /// is: the event says it MOVED, and this says where it STANDS. A browser
+    /// connecting into a quiet hour would otherwise learn nothing until the
+    /// next move, which may never come.
+    #[schema(value_type = Object)]
+    bounds: BTreeMap<String, i64>,
     /// Every venue seen since the tower started, newest snapshot each.
     venues: Vec<Snapshot>,
 }
@@ -500,6 +523,96 @@ async fn consume(
     }
 }
 
+/// How often the record is asked whether it moved.
+///
+/// **Below the compactor's own cadence, deliberately.** The tape is durable
+/// parquet; measuring it more often samples a file that has not been rewritten.
+/// One second at 53µs a kind is 265µs a second for the five served kinds —
+/// which is the measurement that made a server-side watch the obvious shape
+/// rather than a thing each browser does.
+const TAPE_WATCH: Duration = Duration::from_secs(1);
+
+/// Watch the record, and say when it moves.
+///
+/// **Made once, for every browser.** Asking whether the tape grew is 53µs;
+/// reading it is 2.85ms. The cheap question is asked continuously here so that
+/// the expensive answer is fetched only when it changed — where a
+/// `refetchInterval` in the browser would pay the expensive half on a timer to
+/// usually learn nothing, and a conditional request would still cost a round
+/// trip per browser per interval to be told nothing happened. The tower
+/// already holds an open channel to every browser; not asking is cheaper than
+/// a cheap way of asking.
+fn watch_the_record(
+    tape: PathBuf,
+    status: broadcast::Sender<Live>,
+    bounds: Arc<RwLock<BTreeMap<String, i64>>>,
+) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(TAPE_WATCH);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut last: BTreeMap<String, i64> = BTreeMap::new();
+        // Reported on the EDGE. A tape root that is not there is one log line,
+        // not one a second for as long as the tower runs.
+        let mut said_empty = false;
+        loop {
+            ticker.tick().await;
+            // Off the runtime: this opens files. 53µs is short, but short is
+            // not the same as non-blocking, and five of them share one thread
+            // with every open SSE stream.
+            let root = tape.clone();
+            let Ok(found) = tokio::task::spawn_blocking(move || tape::bounds(&root)).await else {
+                continue;
+            };
+
+            if found.is_empty() {
+                if !said_empty {
+                    said_empty = true;
+                    tracing::info!(
+                        root = %tape.display(),
+                        "no tape has written anything yet; the screen will say so"
+                    );
+                }
+            } else {
+                said_empty = false;
+            }
+
+            for moved in moves(&last, &found) {
+                let _ = status.send(Live::Tape(moved));
+            }
+            last = found.clone();
+            *bounds.write().await = found;
+        }
+    });
+}
+
+/// Which kinds moved, given what was last seen and what is there now.
+///
+/// Separated from the watch so it can be held by tests: a loop that only ever
+/// runs against a real tape is a loop whose backwards case is reasoned about
+/// rather than exercised, and the backwards case is the one that would redraw
+/// every chart if it were wrong.
+fn moves(last: &BTreeMap<String, i64>, found: &BTreeMap<String, i64>) -> Vec<TapeMoved> {
+    let mut moved = Vec::new();
+    for (kind, position) in found {
+        match last.get(kind) {
+            // Unchanged. The ordinary case, and it sends nothing.
+            Some(previous) if previous == position => {}
+            // **Backwards is not a move.** It means the store was replaced
+            // underneath the tower, which is worth a line in the log and is
+            // not worth a chart redraw.
+            Some(previous) if previous > position => tracing::warn!(
+                %kind, previous, position,
+                "the tape's bound went backwards; the store was replaced"
+            ),
+            _ => moved.push(TapeMoved {
+                kind: kind.clone(),
+                bound: *position,
+            }),
+        }
+    }
+    moved
+}
+
 /// Every venue's status, as it arrives.
 ///
 /// SSE rather than a WebSocket: the traffic is one-directional, and the
@@ -508,7 +621,7 @@ async fn consume(
 #[utoipa::path(
     get,
     path = "/v1/status",
-    responses((status = 200, description = "A server-sent event stream: a board frame on connect, then status, broker and lagged events", body = Snapshot)),
+    responses((status = 200, description = "A server-sent event stream: a board frame on connect, then status, broker, tape and lagged events", body = Snapshot)),
 )]
 async fn status(
     State(tower): State<Tower>,
@@ -519,7 +632,8 @@ async fn status(
     // appears once a week in production and never in a test.
     let mut rx = tower.status.subscribe();
     let broker = tower.broker.read().await.clone();
-    let opening = board_event(&*tower.board.read().await, broker);
+    let bounds = tower.bounds.read().await.clone();
+    let opening = board_event(&*tower.board.read().await, broker, bounds);
 
     let stream = async_stream::stream! {
         // What is true now, before anything live. Sent even when empty, so a
@@ -537,7 +651,8 @@ async fn status(
                 Err(broadcast::error::RecvError::Lagged(missed)) => {
                     yield Ok(event_for(Err(BroadcastStreamRecvError::Lagged(missed))));
                     let broker = tower.broker.read().await.clone();
-                    yield Ok(board_event(&*tower.board.read().await, broker));
+                    let bounds = tower.bounds.read().await.clone();
+                    yield Ok(board_event(&*tower.board.read().await, broker, bounds));
                 }
                 Err(broadcast::error::RecvError::Closed) => break,
             }
@@ -552,13 +667,18 @@ async fn status(
 /// same question, *what is true now*, and this is it. That is what makes this a
 /// STATE stream rather than an event stream: a message is a notification that
 /// the state moved, and the state itself is always available.
-fn board_event(board: &BTreeMap<String, Arc<Snapshot>>, broker: BrokerState) -> Event {
+fn board_event(
+    board: &BTreeMap<String, Arc<Snapshot>>,
+    broker: BrokerState,
+    bounds: BTreeMap<String, i64>,
+) -> Event {
     // **The broker's state travels with the venues.** A browser connecting
     // during an outage used to be handed an empty list and nothing else, and
     // rendered "no venue has published status yet" — false, reassuring, and
     // worth an afternoon of looking in the wrong place.
     let frame = Board {
         broker,
+        bounds,
         venues: board.values().map(|s| (**s).clone()).collect(),
     };
     Event::default()
@@ -583,6 +703,10 @@ fn event_for(received: Result<Live, BroadcastStreamRecvError>) -> Event {
             .event("broker")
             .json_data(&state)
             .unwrap_or_else(|_| Event::default().event("broker").data("{}")),
+        Ok(Live::Tape(moved)) => Event::default()
+            .event("tape")
+            .json_data(&moved)
+            .unwrap_or_else(|_| Event::default().event("tape").data("{}")),
         // **A gap is an event, never an absence.** Dropping is safe only
         // because the stream is level-triggered -- the next snapshot is the
         // whole state -- and even then the browser is told how far it fell
@@ -660,7 +784,7 @@ async fn tape_view(
         title = "galata-tower",
         description = "A read API over the galata-datawatch record. It watches the record, not the worker.",
     ),
-    components(schemas(About, Partition, Overdue, Board, BrokerState))
+    components(schemas(About, Partition, Overdue, Board, BrokerState, TapeMoved))
 )]
 struct Contract;
 
@@ -692,6 +816,7 @@ fn dump_openapi() -> Result<String, Box<dyn std::error::Error>> {
         status,
         board: Arc::new(RwLock::new(BTreeMap::new())),
         broker: Arc::default(),
+        bounds: Arc::default(),
     });
     Ok(serde_json::to_string_pretty(&api)? + "\n")
 }
@@ -718,6 +843,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (status, _) = broadcast::channel(STATUS_BACKLOG);
     let board = Arc::new(RwLock::new(BTreeMap::new()));
     let broker_state: Arc<RwLock<BrokerState>> = Arc::default();
+    let bounds: Arc<RwLock<BTreeMap<String, i64>>> = Arc::default();
     // Beside the archive by default, which is how datawatch lays them out.
     let tape = std::env::var("GALATA_TAPE").unwrap_or_else(|_| "var/tape".to_owned());
     let tower = Tower {
@@ -726,12 +852,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         status: status.clone(),
         board: Arc::clone(&board),
         broker: Arc::clone(&broker_state),
+        bounds: Arc::clone(&bounds),
     };
 
     // Loopback by default, like everything else here: reaching another machine
     // is a deployment decision, made by setting this.
     let broker = std::env::var("GALATA_BROKER").unwrap_or_else(|_| "127.0.0.1:4222".to_owned());
-    subscribe_to_status(broker, status, board, broker_state);
+    subscribe_to_status(broker, status.clone(), board, broker_state);
+    // The record's own liveness, which does not depend on a bus at all.
+    watch_the_record(tower.tape.clone(), status, bounds);
 
     // Everything else is the screen, which routes itself.
     let (app, _) = router(tower.clone());
@@ -780,7 +909,10 @@ mod tests {
         board.insert("hyperliquid".to_owned(), snapshot("hyperliquid"));
         board.insert("rh-chain".to_owned(), snapshot("rh-chain"));
 
-        let rendered = format!("{:?}", board_event(&board, BrokerState::default()));
+        let rendered = format!(
+            "{:?}",
+            board_event(&board, BrokerState::default(), BTreeMap::new())
+        );
         assert!(rendered.contains("board"), "{rendered}");
         assert!(rendered.contains("hyperliquid"), "{rendered}");
         assert!(rendered.contains("rh-chain"), "{rendered}");
@@ -792,7 +924,7 @@ mod tests {
     fn an_empty_board_is_sent_rather_than_nothing() {
         let rendered = format!(
             "{:?}",
-            board_event(&BTreeMap::new(), BrokerState::default())
+            board_event(&BTreeMap::new(), BrokerState::default(), BTreeMap::new())
         );
         assert!(rendered.contains("board"), "{rendered}");
     }
@@ -817,7 +949,10 @@ mod tests {
         assert_eq!(held.len(), 2, "a quiet venue must not be dropped");
         assert!(held.contains_key("hyperliquid"));
 
-        let rendered = format!("{:?}", board_event(&held, BrokerState::default()));
+        let rendered = format!(
+            "{:?}",
+            board_event(&held, BrokerState::default(), BTreeMap::new())
+        );
         assert!(
             rendered.contains("hyperliquid"),
             "and it must still reach a browser connecting later: {rendered}"
@@ -861,6 +996,7 @@ mod tests {
                     attempts: 7,
                     refusal: Some("connection refused".to_owned()),
                 },
+                BTreeMap::new(),
             )
         );
         assert!(
@@ -947,6 +1083,105 @@ mod tests {
     fn a_wait_too_small_to_jitter_is_still_a_wait() {
         let got = jittered(Duration::from_micros(500));
         assert!(got <= Duration::from_millis(1), "{got:?}");
+    }
+
+    fn bounds(pairs: &[(&str, i64)]) -> BTreeMap<String, i64> {
+        pairs.iter().map(|(k, v)| ((*k).to_owned(), *v)).collect()
+    }
+
+    /// The ordinary case, and the one that must cost nothing: a quiet record
+    /// sends no event, so a browser reads no rows.
+    #[test]
+    fn a_record_that_has_not_moved_says_nothing() {
+        let seen = bounds(&[("quotes", 68286), ("candles", 12)]);
+        assert!(
+            moves(&seen, &seen).is_empty(),
+            "an unchanged bound must not wake every open screen"
+        );
+    }
+
+    /// A kind appearing for the first time is a move: the screen has never
+    /// drawn it.
+    #[test]
+    fn a_kind_that_appears_is_a_move() {
+        let moved = moves(&BTreeMap::new(), &bounds(&[("quotes", 1)]));
+        assert_eq!(moved.len(), 1);
+        assert_eq!(moved[0].kind, "quotes");
+        assert_eq!(moved[0].bound, 1);
+    }
+
+    /// Only the kind that moved, so a quotes write does not redraw candles.
+    #[test]
+    fn only_the_kind_that_moved_is_reported() {
+        let moved = moves(
+            &bounds(&[("quotes", 10), ("candles", 5)]),
+            &bounds(&[("quotes", 11), ("candles", 5)]),
+        );
+        assert_eq!(moved.len(), 1, "{moved:?}");
+        assert_eq!(moved[0].kind, "quotes");
+    }
+
+    /// **Backwards is not a move.** The store was replaced underneath the
+    /// tower; that is a log line, not a redraw of every chart.
+    #[test]
+    fn a_bound_that_went_backwards_is_not_a_move() {
+        let moved = moves(&bounds(&[("quotes", 100)]), &bounds(&[("quotes", 40)]));
+        assert!(
+            moved.is_empty(),
+            "a store replaced underneath the tower must not read as growth: {moved:?}"
+        );
+    }
+
+    /// A kind that stops being present is not reported as anything. The screen
+    /// keeps what it drew, which is the same *once seen, never dropped* rule
+    /// the venue board holds.
+    #[test]
+    fn a_kind_that_disappears_is_not_reported() {
+        let moved = moves(&bounds(&[("quotes", 10)]), &BTreeMap::new());
+        assert!(moved.is_empty(), "{moved:?}");
+    }
+
+    /// The frame carries where the record STANDS, so a browser connecting into
+    /// a quiet hour does not wait for a move that may never come.
+    #[test]
+    fn a_board_frame_carries_each_kind_s_bound() {
+        let rendered = format!(
+            "{:?}",
+            board_event(
+                &BTreeMap::new(),
+                BrokerState::default(),
+                bounds(&[("quotes", 68286)]),
+            )
+        );
+        assert!(rendered.contains("bounds"), "{rendered}");
+        assert!(rendered.contains("68286"), "{rendered}");
+    }
+
+    /// Its own event name, so the browser dispatches rather than inspects.
+    #[test]
+    fn a_move_arrives_as_a_tape_event() {
+        let rendered = format!(
+            "{:?}",
+            event_for(Ok(Live::Tape(TapeMoved {
+                kind: "quotes".to_owned(),
+                bound: 7,
+            })))
+        );
+        assert!(rendered.contains("tape"), "{rendered}");
+        assert!(rendered.contains("quotes"), "{rendered}");
+    }
+
+    /// **Asking is an answer, never a failure.** `view` refuses an unwritten
+    /// kind, correctly, because its caller asked for rows; this caller asked
+    /// whether anything had arrived, and *no* is the answer. A watch that
+    /// returned an error here would log one a second for ever.
+    #[test]
+    fn a_root_with_no_tape_answers_rather_than_failing() {
+        let nowhere = PathBuf::from("/galata-tower-no-such-tape-root");
+        assert!(
+            tape::bounds(&nowhere).is_empty(),
+            "a root that is not there must be silence, not a refusal"
+        );
     }
 
     /// `say` writes both: the stored state for whoever connects next, and the

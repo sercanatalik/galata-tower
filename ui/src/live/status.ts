@@ -16,13 +16,15 @@
 //   Counted, never judged. Reconnects and missed snapshots are numbers the
 //   screen shows. Whether either is acceptable is the operator's.
 
-import { useSyncExternalStore } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
+import { useEffect, useSyncExternalStore } from 'react'
 
 import type { components } from '../contract/api'
 
 type Snapshot = components['schemas']['Snapshot']
 type Board = components['schemas']['Board']
 type BrokerState = components['schemas']['BrokerState']
+type TapeMoved = components['schemas']['TapeMoved']
 
 export interface LiveVenue {
   venue: string
@@ -46,6 +48,22 @@ export interface LiveState {
    * Null until a board frame arrives.
    */
   broker: BrokerState | null
+  /**
+   * Each kind's durable bound, as the tower last read it.
+   *
+   * The tower watches this on everyone's behalf — asking whether the tape
+   * moved is 53µs against 2.85ms to read it — so nothing here polls. A value
+   * changing is the whole signal.
+   */
+  bounds: Readonly<Record<string, number>>
+  /**
+   * Our wall clock when each kind last advanced.
+   *
+   * **Local, so it can be subtracted from a local clock.** Same rule as
+   * `received_ms`: a duration measured here is the one thing this clock can
+   * answer honestly.
+   */
+  advancedAt: Readonly<Record<string, number>>
   /** Reconnects since load. A count, not a verdict. */
   reconnects: number
   /** Snapshots the server told us we missed. A gap is an event, never an absence. */
@@ -59,6 +77,8 @@ let state: LiveState = {
   connected: false,
   seenBoard: false,
   broker: null,
+  bounds: {},
+  advancedAt: {},
   reconnects: 0,
   missed: 0,
   venues: new Map(),
@@ -99,7 +119,28 @@ function open() {
     // The broker's state rides in the frame so that a browser connecting
     // DURING an outage learns it immediately, rather than waiting for a
     // change event that by definition will not come while nothing changes.
-    set({ venues, connected: true, seenBoard: true, broker: frame.broker })
+    // The bounds are where the record STANDS. Arrival is stamped only for a
+    // kind we had not seen: a frame after a reconnect restates the same
+    // position, and treating that as an advance would show a stale table as
+    // fresh — which is the defect this whole change exists to fix.
+    const bounds = (frame.bounds ?? {}) as Record<string, number>
+    const advancedAt = { ...state.advancedAt }
+    for (const [kind, bound] of Object.entries(bounds)) {
+      if (state.bounds[kind] !== bound) advancedAt[kind] = now
+    }
+    set({ venues, connected: true, seenBoard: true, broker: frame.broker, bounds, advancedAt })
+  })
+
+  // The record moved. The rows are NOT here: the route that serves them caps
+  // them already, and a browser not drawing this kind should not pay to
+  // receive it. This says which kind, and where it now stands.
+  source.addEventListener('tape', (event) => {
+    const moved = JSON.parse((event as MessageEvent<string>).data) as TapeMoved
+    set({
+      bounds: { ...state.bounds, [moved.kind]: moved.bound },
+      advancedAt: { ...state.advancedAt, [moved.kind]: Date.now() },
+      connected: true,
+    })
   })
 
   // The tower's subscription came or went. A notification that the state
@@ -257,4 +298,44 @@ export function silenceReason(silence: Silence): string {
     case 'nothing-published':
       return 'The tower is subscribed; no venue has published yet.'
   }
+}
+
+/**
+ * Refetch this kind's reads when the record advances, and not otherwise.
+ *
+ * **Told, never asking.** A `refetchInterval` would decode 39,231 rows on a
+ * timer to usually learn nothing; a conditional request would still cost a
+ * round trip per browser per interval to be told nothing happened. The tower
+ * holds an open channel and watches the bound once for everybody, so the
+ * browser reads only when there is something new to read.
+ *
+ * Returns how long since this kind last advanced, in whole seconds, or null if
+ * it never has — because a current table and an hour-old one are otherwise
+ * identical, which is the defect the whole change is about.
+ */
+export function useRecordAdvances(kind: string): number | null {
+  const live = useLiveStatus()
+  const client = useQueryClient()
+  const bound = live.bounds[kind]
+
+  useEffect(() => {
+    if (bound === undefined) return
+    // Matched by predicate rather than by rebuilding the key. The key
+    // openapi-react-query makes carries the full params, so an equality test
+    // would have to restate every query's window and limit — three places to
+    // fall out of step instead of one predicate that reads the kind.
+    client.invalidateQueries({
+      predicate: (query) => {
+        const key = query.queryKey as unknown[]
+        if (key[1] !== '/v1/tape/{kind}') return false
+        const params = key[2] as { params?: { path?: { kind?: string } } } | undefined
+        return params?.params?.path?.kind === kind
+      },
+    })
+  }, [bound, kind, client])
+
+  const at = live.advancedAt[kind]
+  // `live.tick` is read so this recomputes once a second without a message.
+  void live.tick
+  return at === undefined ? null : sinceArrival(at)
 }

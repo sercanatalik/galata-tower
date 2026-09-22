@@ -17,7 +17,8 @@ than from anything a capture process says about itself:
   GET /v1/about        the archive root, and the tape columns a read can prune on
   GET /v1/partitions   the partitions the record holds
   GET /v1/overdue      closed days still holding more segments than compaction left
-  GET /v1/status       every venue's live status, as server-sent events
+  GET /v1/status       live state, as server-sent events: venue status, the
+                       broker's reachability, and when the record advances
   GET /v1/tape/{kind}  a window of one dataset, bounded by what is durable
 ```
 
@@ -116,6 +117,34 @@ by setting these rather than by the binary assuming them.
 **The tower starts whether or not a broker answers.** The record is a fact on
 disk and does not need a bus to be true, so a refused connection is reported
 and the record is still served.
+
+## Following the record
+
+The screen does not poll. The tower reads each tape kind's durable bound once a
+second and sends a `tape` event only when one moves; the browser refetches that
+kind's rows when it is told, and not otherwise.
+
+That shape was measured rather than assumed. Against the real tape:
+
+```
+  open + bound   53µs      "has it grown?"
+  full view      2.85ms    39,231 rows decoded
+```
+
+Asking is fifty-four times cheaper than reading, so the tower asks — once, for
+every browser — and the expensive half runs only when the answer is yes. A
+`refetchInterval` in the browser would pay the expensive half on a timer to
+usually learn nothing; a conditional request would still cost a round trip per
+browser per interval to be told nothing happened. The tower already holds an
+open channel to every browser, and not asking is cheaper than a cheap way of
+asking.
+
+`cargo run --release --example cost-of-a-bound` is how those two numbers were
+got, and is kept runnable so the next person can check them rather than trust
+them.
+
+Each panel shows how long since the record it draws last advanced, because a
+current table and an hour-old one are otherwise identical.
 
 ## What it deliberately does not do
 
