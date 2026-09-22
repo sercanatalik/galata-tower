@@ -1,7 +1,7 @@
 import { useState } from 'react'
 
 import { $api } from './contract/client'
-import { useRecordAdvances, useRemembered } from './live/status'
+import { useRecordAdvances } from './live/status'
 import { dec, fmt } from './contract/money'
 
 /**
@@ -82,13 +82,18 @@ export default function Tape() {
   // bounds the render.
   // The route returns the newest already; this only reverses them for the eye.
   const rows = [...(data?.rows ?? [])].reverse()
-  // **From the route, and remembered.** Deriving this from the returned rows
-  // offered exactly one instrument — the newest forty quotes are all the
-  // busiest ticker, so the other five stayed unreachable, which is the gap
-  // this change is about, reintroduced by its own fix. The route reports what
-  // the read matched, before the cap; once a ticker is chosen that is one
-  // entry, so what an unfiltered read said is held on to.
-  const tickers = useRemembered(data?.tickers)
+  // **From the record, so nothing has to be remembered.** This derived the
+  // list from the returned rows, which offered one instrument — the newest
+  // forty quotes are all the busiest ticker — and then from the route's own
+  // `tickers`, which collapses to one entry the moment a ticker is chosen. A
+  // list taken from the record does neither, because it never depended on the
+  // read it narrows.
+  const { data: held } = $api.useQuery('get', '/v1/instruments')
+  const tickers = [
+    ...new Set(
+      (held?.instruments ?? []).filter((i) => i.kind === 'quotes').map((i) => i.ticker),
+    ),
+  ].sort()
 
   return (
     <section>
@@ -109,7 +114,7 @@ export default function Tape() {
               window's rows no longer include it — otherwise choosing a quiet
               ticker empties the table and the selector at once, and there is
               no way back to it. */}
-          {[...new Set([...tickers, ...(ticker ? [ticker] : [])])].sort().map((t) => (
+          {tickers.map((t) => (
             <option key={t} value={t}>
               {t}
             </option>

@@ -17,7 +17,7 @@
 //   screen shows. Whether either is acceptable is the operator's.
 
 import { useQueryClient } from '@tanstack/react-query'
-import { useEffect, useState, useSyncExternalStore } from 'react'
+import { useEffect, useSyncExternalStore } from 'react'
 
 import type { components } from '../contract/api'
 
@@ -375,26 +375,3 @@ export function useFollowTheRecord(): void {
   }, [live.advances, client])
 }
 
-/**
- * A list of instruments that only ever grows.
- *
- * **Because narrowing a read narrows what it can report.** `/v1/tape/{kind}`
- * lists the instruments it matched; ask it for one and it truthfully answers
- * with one. A selector built from the latest answer alone would therefore
- * collapse to a single option the moment it was used, with no way back — so
- * what an earlier, wider read said is held on to.
- *
- * Held in React state rather than a module value: two panels read different
- * datasets and must not inherit each other's instruments.
- */
-export function useRemembered(seen: readonly string[] | undefined): readonly string[] {
-  const [held, setHeld] = useState<readonly string[]>([])
-  useEffect(() => {
-    if (!seen || seen.length === 0) return
-    setHeld((before) => {
-      const merged = [...new Set([...before, ...seen])].sort()
-      return merged.length === before.length ? before : merged
-    })
-  }, [seen])
-  return held
-}

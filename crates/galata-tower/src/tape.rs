@@ -271,29 +271,6 @@ pub fn instruments(root: &Path) -> Instruments {
     Instruments { bound, instruments }
 }
 
-/// Every distinct instrument in a window.
-///
-/// A dataset with no `ticker` column answers with none rather than refusing:
-/// the caller asked which instruments are here, and *none is a column* is the
-/// same answer as *none are here* for its purposes.
-fn tickers_in(batches: &[RecordBatch]) -> Vec<String> {
-    let mut found = std::collections::BTreeSet::new();
-    for batch in batches {
-        let Some(column) = batch
-            .column_by_name("ticker")
-            .and_then(|c| c.as_any().downcast_ref::<arrow::array::StringArray>())
-        else {
-            continue;
-        };
-        for i in 0..batch.num_rows() {
-            if !column.is_null(i) {
-                found.insert(column.value(i).to_owned());
-            }
-        }
-    }
-    found.into_iter().collect()
-}
-
 /// A kind, from the name the tape writes for it.
 pub fn kind_of(name: &str) -> Result<Kind, TapeError> {
     SERVED
@@ -339,20 +316,6 @@ pub struct View {
     /// conditionally is one callers learn to ignore, and this is the only thing
     /// distinguishing a capped read from a quiet window.
     pub total: usize,
-    /// Every instrument this read matched, before the cap.
-    ///
-    /// **Before the cap, but after the ticker filter** — and the difference
-    /// matters. The newest forty quotes in this tape are all one instrument,
-    /// so a caller deriving its list from the returned ROWS sees exactly one
-    /// and the other five stay unreachable. That is the gap this field
-    /// closes. It does not claim to list instruments the caller asked to
-    /// exclude: a read naming `BTC` reports `BTC`, and a caller offering a
-    /// choice remembers what an unfiltered read told it.
-    ///
-    /// Folded from the arrow column directly, never through `ArrayFormatter`:
-    /// a distinct-value scan of one string column, bounded by the instrument
-    /// count rather than the row count.
-    pub tickers: Vec<String>,
     /// The rows, each a map of column to value. Decimals are strings.
     ///
     /// When a cap applies these are the NEWEST in the window — a reader
@@ -522,7 +485,6 @@ pub fn view(
         kind: kind.as_str().to_owned(),
         bound: reader.bound().position,
         total,
-        tickers: tickers_in(&batches),
         rows: newest(&batches, limit)?,
     })
 }

@@ -901,7 +901,6 @@
           "kind",
           "bound",
           "total",
-          "tickers",
           "rows"
         ],
         "properties": {
@@ -920,13 +919,6 @@
               "type": "object"
             },
             "description": "The rows, each a map of column to value. Decimals are strings.\n\nWhen a cap applies these are the NEWEST in the window — a reader\nwatching a tape wants its end — and `total` is what makes that\ntruncation visible rather than inferred."
-          },
-          "tickers": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "Every instrument this read matched, before the cap.\n\n**Before the cap, but after the ticker filter** — and the difference\nmatters. The newest forty quotes in this tape are all one instrument,\nso a caller deriving its list from the returned ROWS sees exactly one\nand the other five stay unreachable. That is the gap this field\ncloses. It does not claim to list instruments the caller asked to\nexclude: a read naming `BTC` reports `BTC`, and a caller offering a\nchoice remembers what an unfiltered read told it.\n\nFolded from the arrow column directly, never through `ArrayFormatter`:\na distinct-value scan of one string column, bounded by the instrument\ncount rather than the row count."
           },
           "total": {
             "type": "integer",

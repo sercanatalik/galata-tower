@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useChart } from './charts/useChart'
 import { $api } from './contract/client'
 import { dec, plot } from './contract/money'
-import { useRecordAdvances, useRemembered } from './live/status'
+import { useRecordAdvances } from './live/status'
 
 /**
  * Rows are not candles.
@@ -45,34 +45,41 @@ export default function Candles() {
   const advanced = useRecordAdvances('candles')
   const [ticker, setTicker] = useState<string | null>(null)
 
-  // **Ask for the ticker being drawn.** This read 11,932 rows and kept the
-  // 1,960 belonging to the chosen instrument — after the rest had crossed the
-  // wire. The route filters now, so the discarded rows are never sent.
-  //
-  // The first read names no ticker, because the list of instruments comes
-  // from what the window holds and there is nothing to choose from yet.
-  const { data, error } = $api.useQuery('get', '/v1/tape/{kind}', {
-    params: {
-      path: { kind: 'candles' },
-      query: { ...WHOLE_TAPE, limit: CANDLE_LIMIT, ...(ticker ? { ticker } : {}) },
-    },
-  })
-
-  const rows = (data?.rows ?? []) as Row[]
-  // **From the route, and remembered.** Once a ticker is chosen the read
-  // matches only that one, so a list taken from the latest response alone
-  // would collapse to a single entry with no way back.
-  const tickers = useRemembered(data?.tickers)
-  // Chosen from what the window holds rather than hardcoded: a tape from
-  // another venue has none of these six.
+  // **The record names its instruments; this does not read rows to find
+  // them.** Until 2026-09-23 the first read named no ticker, because the list
+  // came from the response — 11,932 rows and 4,092,528 bytes to learn six
+  // names, on every load and every advance. `/v1/instruments` answers that
+  // question directly, and the panel showing it has already fetched this, so
+  // TanStack serves both from one query.
+  const { data: held } = $api.useQuery('get', '/v1/instruments')
+  const tickers = useMemo(
+    () =>
+      [
+        ...new Set(
+          (held?.instruments ?? []).filter((i) => i.kind === 'candles').map((i) => i.ticker),
+        ),
+      ].sort(),
+    [held],
+  )
+  // Chosen from what the RECORD holds rather than hardcoded: a tape from
+  // another venue has none of these six. The list does not change when the
+  // choice does, because it never came from the filtered read.
   const chosen = ticker && tickers.includes(ticker) ? ticker : (tickers[0] ?? null)
-  // **Adopt what is being drawn**, so the next read asks for it. The FIRST
-  // read cannot: the instrument list comes from the response, so there is
-  // nothing to name yet. That one read is the price of not hardcoding a list
-  // of tickers; every read after it carries only the rows drawn.
-  useEffect(() => {
-    if (!ticker && chosen) setTicker(chosen)
-  }, [ticker, chosen])
+
+  // **Waits for what narrows it** — TanStack's documented dependent query. No
+  // unfiltered read is ever issued, where before one fired and was corrected.
+  const { data, error } = $api.useQuery(
+    'get',
+    '/v1/tape/{kind}',
+    {
+      params: {
+        path: { kind: 'candles' },
+        query: { ...WHOLE_TAPE, limit: CANDLE_LIMIT, ...(chosen ? { ticker: chosen } : {}) },
+      },
+    },
+    { enabled: !!chosen },
+  )
+  const rows = (data?.rows ?? []) as Row[]
 
   const candles = useMemo(() => {
     if (!chosen) return []
