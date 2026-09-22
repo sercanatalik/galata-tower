@@ -9,6 +9,7 @@
 //! One process serves both halves: the API below, and `ui/dist` embedded at
 //! compile time, so there is no node process in a deployment.
 
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
@@ -23,10 +24,9 @@ use axum::{Json, Router};
 use galata_broker::{BrokerIdentity, NatsSubscriber};
 use rust_embed::Embed;
 use serde::Serialize;
-use tokio::sync::broadcast;
-use tokio_stream::wrappers::BroadcastStream;
+use tokio::sync::{RwLock, broadcast};
+use tokio_stream::Stream;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
-use tokio_stream::{Stream, StreamExt};
 use utoipa::{OpenApi, ToSchema};
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
@@ -47,6 +47,18 @@ struct Tower {
     archive: PathBuf,
     /// One subscription's snapshots, fanned to every connected screen.
     status: broadcast::Sender<Arc<Snapshot>>,
+    /// The newest snapshot per venue.
+    ///
+    /// **Insert or replace, never remove** -- carried from the predecessor's
+    /// `Board::observe`, and held on the SERVER so that *once seen, never
+    /// dropped* does not depend on every client implementing it. A venue that
+    /// stops publishing keeps its last snapshot here, because absence after
+    /// presence is the statement an operator most needs rendered.
+    ///
+    /// Read-mostly: one writer at the publisher's cadence, a reader per
+    /// connecting browser and per lag. `Arc<Snapshot>` so a board frame clones
+    /// pointers rather than payloads.
+    board: Arc<RwLock<BTreeMap<String, Arc<Snapshot>>>>,
 }
 
 /// One venue's status, exactly as it was published.
@@ -212,7 +224,11 @@ fn mime_guess_for(path: &str) -> &'static str {
 /// **The tower starts whether or not a broker answers.** The record is a fact
 /// on disk and does not need a bus to be true, so a refused connection is
 /// reported and the process continues serving the half that works.
-fn subscribe_to_status(addr: String, status: broadcast::Sender<Arc<Snapshot>>) {
+fn subscribe_to_status(
+    addr: String,
+    status: broadcast::Sender<Arc<Snapshot>>,
+    board: Arc<RwLock<BTreeMap<String, Arc<Snapshot>>>>,
+) {
     tokio::spawn(async move {
         let identity = BrokerIdentity::new(
             "reader",
@@ -237,13 +253,19 @@ fn subscribe_to_status(addr: String, status: broadcast::Sender<Arc<Snapshot>>) {
                 continue;
             };
             let body = serde_json::from_slice(&payload).unwrap_or(serde_json::Value::Null);
-            // `send` fails only when nobody is listening, which is the ordinary
-            // case for a tower with no browser open.
-            let _ = status.send(Arc::new(Snapshot {
+            let snapshot = Arc::new(Snapshot {
                 subject: subject.clone(),
                 venue: venue.to_owned(),
                 body,
-            }));
+            });
+            // Insert or replace, never remove.
+            board
+                .write()
+                .await
+                .insert(venue.to_owned(), Arc::clone(&snapshot));
+            // `send` fails only when nobody is listening, which is the ordinary
+            // case for a tower with no browser open.
+            let _ = status.send(snapshot);
         }
         tracing::warn!("the status subscription ended");
     });
@@ -262,12 +284,49 @@ fn subscribe_to_status(addr: String, status: broadcast::Sender<Arc<Snapshot>>) {
 async fn status(
     State(tower): State<Tower>,
 ) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
-    // `BroadcastStream` surfaces the lag as a stream item rather than hiding
-    // it, which is the whole reason it is used here instead of a hand-written
-    // loop: the gap arrives as something that must be handled.
-    let stream =
-        BroadcastStream::new(tower.status.subscribe()).map(|received| Ok(event_for(received)));
+    // **Subscribe FIRST, then read the board.** A snapshot arriving between the
+    // two is then delivered by the stream rather than lost between them. The
+    // other order has a hole exactly one message wide -- the kind of race that
+    // appears once a week in production and never in a test.
+    let mut rx = tower.status.subscribe();
+    let opening = board_event(&*tower.board.read().await);
+
+    let stream = async_stream::stream! {
+        // What is true now, before anything live. Sent even when empty, so a
+        // browser can tell "nothing has published" from "not connected".
+        yield Ok(opening);
+        loop {
+            match rx.recv().await {
+                Ok(snapshot) => yield Ok(event_for(Ok(snapshot))),
+                // The count AND the state. Two events because they say
+                // different things: *you missed n* is worth reporting to an
+                // operator, and *here is what is true* is what fixes it.
+                // Sending only the count -- which this tower did until
+                // 2026-09-22 -- leaves the browser to recover by waiting an
+                // interval per venue.
+                Err(broadcast::error::RecvError::Lagged(missed)) => {
+                    yield Ok(event_for(Err(BroadcastStreamRecvError::Lagged(missed))));
+                    yield Ok(board_event(&*tower.board.read().await));
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    };
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
+}
+
+/// Every venue's newest snapshot, as one frame.
+///
+/// **The answer to every gap.** Connect, lag, reconnect -- all three are the
+/// same question, *what is true now*, and this is it. That is what makes this a
+/// STATE stream rather than an event stream: a message is a notification that
+/// the state moved, and the state itself is always available.
+fn board_event(board: &BTreeMap<String, Arc<Snapshot>>) -> Event {
+    let venues: Vec<&Snapshot> = board.values().map(|s| &**s).collect();
+    Event::default()
+        .event("board")
+        .json_data(&venues)
+        .unwrap_or_else(|_| Event::default().event("board").data("[]"))
 }
 
 /// One received item as the event the browser sees.
@@ -327,6 +386,7 @@ fn dump_openapi() -> Result<String, Box<dyn std::error::Error>> {
     let (_, api) = router(Tower {
         archive: PathBuf::from("."),
         status,
+        board: Arc::new(RwLock::new(BTreeMap::new())),
     });
     Ok(serde_json::to_string_pretty(&api)? + "\n")
 }
@@ -351,15 +411,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // there, the listing is empty and the screen says so.
     let archive = std::env::var("GALATA_ARCHIVE").unwrap_or_else(|_| "var/archive".to_owned());
     let (status, _) = broadcast::channel(STATUS_BACKLOG);
+    let board = Arc::new(RwLock::new(BTreeMap::new()));
     let tower = Tower {
         archive: PathBuf::from(archive),
         status: status.clone(),
+        board: Arc::clone(&board),
     };
 
     // Loopback by default, like everything else here: reaching another machine
     // is a deployment decision, made by setting this.
     let broker = std::env::var("GALATA_BROKER").unwrap_or_else(|_| "127.0.0.1:4222".to_owned());
-    subscribe_to_status(broker, status);
+    subscribe_to_status(broker, status, board);
 
     // Everything else is the screen, which routes itself.
     let (app, _) = router(tower.clone());
@@ -380,6 +442,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the tests construct one now: the handler is a generator, and the
+    // error type is what event_for matches on.
+    use tokio_stream::StreamExt as _;
+    use tokio_stream::wrappers::BroadcastStream;
 
     fn snapshot(venue: &str) -> Arc<Snapshot> {
         Arc::new(Snapshot {
@@ -395,6 +461,54 @@ mod tests {
         let rendered = format!("{:?}", event_for(Ok(snapshot("hyperliquid"))));
         assert!(rendered.contains("status"), "{rendered}");
         assert!(rendered.contains("hyperliquid"), "{rendered}");
+    }
+
+    /// What a browser is handed the moment it connects.
+    #[test]
+    fn a_board_frame_carries_every_venue_seen() {
+        let mut board = BTreeMap::new();
+        board.insert("hyperliquid".to_owned(), snapshot("hyperliquid"));
+        board.insert("rh-chain".to_owned(), snapshot("rh-chain"));
+
+        let rendered = format!("{:?}", board_event(&board));
+        assert!(rendered.contains("board"), "{rendered}");
+        assert!(rendered.contains("hyperliquid"), "{rendered}");
+        assert!(rendered.contains("rh-chain"), "{rendered}");
+    }
+
+    /// An empty board is still a frame, so a browser can tell "nothing has
+    /// published" from "not connected".
+    #[test]
+    fn an_empty_board_is_sent_rather_than_nothing() {
+        let rendered = format!("{:?}", board_event(&BTreeMap::new()));
+        assert!(rendered.contains("board"), "{rendered}");
+    }
+
+    /// **Insert or replace, never remove.** A venue that goes quiet keeps its
+    /// last snapshot, because absence after presence is the statement an
+    /// operator most needs rendered.
+    #[tokio::test]
+    async fn a_quiet_venue_stays_in_the_board() {
+        let board: Arc<RwLock<BTreeMap<String, Arc<Snapshot>>>> = Arc::default();
+        board
+            .write()
+            .await
+            .insert("hyperliquid".to_owned(), snapshot("hyperliquid"));
+        // Another venue publishes; the first says nothing further.
+        board
+            .write()
+            .await
+            .insert("rh-chain".to_owned(), snapshot("rh-chain"));
+
+        let held = board.read().await;
+        assert_eq!(held.len(), 2, "a quiet venue must not be dropped");
+        assert!(held.contains_key("hyperliquid"));
+
+        let rendered = format!("{:?}", board_event(&held));
+        assert!(
+            rendered.contains("hyperliquid"),
+            "and it must still reach a browser connecting later: {rendered}"
+        );
     }
 
     /// **A gap is an event, never an absence**, and it says how far.

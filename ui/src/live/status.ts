@@ -31,6 +31,8 @@ export interface LiveVenue {
 
 export interface LiveState {
   connected: boolean
+  /** Whether a board frame has arrived, which is how "none yet" is told from "not connected". */
+  seenBoard: boolean
   /** Reconnects since load. A count, not a verdict. */
   reconnects: number
   /** Snapshots the server told us we missed. A gap is an event, never an absence. */
@@ -42,6 +44,7 @@ export interface LiveState {
 
 let state: LiveState = {
   connected: false,
+  seenBoard: false,
   reconnects: 0,
   missed: 0,
   venues: new Map(),
@@ -66,6 +69,20 @@ function open() {
     // Not the first open: EventSource reconnects on its own, and each one
     // after the first is worth counting.
     set({ connected: true, reconnects: state.connected ? state.reconnects : state.reconnects })
+  })
+
+  // **The answer to every gap.** The tower sends this on connect and again
+  // whenever we fall behind, so connect, lag and reconnect all have one
+  // answer: here is what is true now. Replace the whole map -- the same
+  // replace-never-patch rule as a single snapshot, one level up.
+  source.addEventListener('board', (event) => {
+    const snapshots = JSON.parse((event as MessageEvent<string>).data) as Snapshot[]
+    const venues = new Map<string, LiveVenue>()
+    const now = Date.now()
+    for (const s of snapshots) {
+      venues.set(s.venue, { venue: s.venue, body: s.body, received_ms: now })
+    }
+    set({ venues, connected: true, seenBoard: true })
   })
 
   source.addEventListener('status', (event) => {

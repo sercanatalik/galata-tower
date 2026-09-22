@@ -99,7 +99,10 @@ function Status() {
       </p>
       {venues.length === 0 ? (
         <p className="muted">
-          No venue has published status yet. The record above does not depend on the bus.
+          {live.seenBoard
+            ? 'No venue has published status yet.'
+            : 'Waiting for the stream.'}{' '}
+          The record above does not depend on the bus.
         </p>
       ) : null}
       <ul className="rows">

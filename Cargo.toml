@@ -55,6 +55,12 @@ utoipa = { version = "5.5", features = ["axum_extras"] }
 utoipa-axum = "0.2"
 # A broadcast receiver as a Stream, for the SSE body.
 tokio-stream = { version = "0.1", features = ["sync"] }
+# The SSE body is a queue of prepared frames followed by a loop that may emit
+# two events for one received item and must await a lock in between. Written
+# with combinators that is a puzzle; written as a generator it is the loop it
+# is. The predecessor reached for `futures_util::stream::unfold` for the same
+# shape.
+async-stream = "0.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

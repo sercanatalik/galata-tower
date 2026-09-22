@@ -21,6 +21,7 @@ galata-datawatch.workspace = true
 axum.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
+async-stream.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rust-embed.workspace = true
