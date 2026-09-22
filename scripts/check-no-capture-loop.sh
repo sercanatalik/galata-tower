@@ -5,71 +5,118 @@
 # The tower watches the RECORD, not the worker: a heartbeat is a claim, a closed
 # partition still holding 1,412 segments is a fact on disk. Everything it serves
 # comes from the store's own listing, so it has no use for the machinery that
-# fills the store -- and acquiring it would put a websocket stack and an HTTP
-# client behind a screen that reads parquet.
+# fills the store.
 #
-# `galata-datawatch` is taken with `default-features = false` for exactly this.
-# Measured in that repository's design/measured.md: a tree built without
-# `capture` links 279 crates where one with it links 541.
+# THE RULE IS NOT "NO ASYNC". It is "nothing that exists to talk to a venue".
+# `tokio`, `hyper` and `hyper-util` are here and are axum's; a server needs a
+# server. So is `rustls`, once `galata-broker` arrives, because NATS runs over
+# TLS -- and TLS exists to talk to anything, which is the opposite of a venue
+# transport. This script forbade it until 2026-09-22, for a reason its own
+# header said was not the rule.
 #
-# WHAT IS NOT FORBIDDEN, and the distinction is the whole point: `tokio`, `hyper`
-# and `hyper-util` are present and legitimate -- they are axum's, and a server
-# needs a server. The rule is not "no async"; it is "nothing that exists to talk
-# to a venue".
+# So the rule is asserted as the rule. `galata-datawatch` is taken with
+# `default-features = false`; with the feature on, `cargo tree -e features`
+# prints the line `galata-datawatch feature "capture"`, and with it off that
+# line is absent. Grepping for it IS the assertion rather than a proxy for it.
+# Measured in galata-datawatch's design/measured.md: a tree without `capture`
+# links 279 crates where one with it links 541.
 #
-# Asked of cargo rather than of the manifest, because a manifest is what
-# somebody edits and a resolved tree is what runs.
+# The crate list below is a SECOND NET, not the definition. The feature
+# assertion cannot see a venue transport added directly to this crate's
+# manifest -- that leaves `capture` off -- so the transports are named too.
 #
-# Usage: check-no-capture-loop.sh [check|plant|targets] [root]
+# NOT cargo-deny, though `[bans]` is the standard answer and this family runs
+# `cargo deny check` elsewhere: cargo-deny DOES NOT APPLY BANS TO PATH
+# DEPENDENCIES, and every galata dependency here is one until galata-datawatch
+# publishes. A ban that silently skips the crates it is aimed at is worse than
+# no ban. Its `[graph] all-features` setting is the related trap: without it a
+# feature-gated dependency is absent from the graph and a forbidden one passes.
+#
+# Usage: check-no-capture-loop.sh [check|plant|plants|targets] [root]
 
 set -euo pipefail
 
 VERB=check
 if [[ $# -gt 0 ]]; then
-    case "$1" in check|plant|targets) VERB="$1"; shift ;; esac
+    case "$1" in check|plant|plants|targets) VERB="$1"; shift ;; esac
 fi
 ROOT="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+PLANT="${GALATA_GUARD_PLANT:-capture-feature}"
 
 if [[ ! -f "$ROOT/Cargo.toml" ]]; then
     echo "$(basename "$0"): $ROOT is not a galata-tower workspace; refusing to scan nothing and call it ok" >&2
     exit 2
 fi
 
-# Every one of these enters only through galata-datawatch's `capture` feature.
-FORBIDDEN='tokio-tungstenite|tungstenite|reqwest|rustls|rustls-pki-types|webpki-roots'
+# A venue's transport. NOT rustls: see the header.
+FORBIDDEN='tokio-tungstenite|tungstenite|reqwest'
+DEP_LINE='galata-datawatch = { path = "../galata-datawatch/crates/galata-datawatch", default-features = false }'
 
 case "$VERB" in
+    plants)
+        echo capture-feature
+        echo venue-transport
+        ;;
     targets)
         echo "Cargo.toml"
         echo "crates/galata-tower/Cargo.toml"
         ;;
     plant)
-        # The ordinary mistake: turning the capture feature back on, which is
-        # one word in a manifest and 262 crates in the tree.
-        python3 - "$ROOT/Cargo.toml" <<'PLANTPY'
+        case "$PLANT" in
+            # One word in a manifest, 85 crates in the tree.
+            capture-feature)
+                python3 - "$ROOT/Cargo.toml" <<PLANTPY
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
-marker = 'galata-datawatch = { path = "../galata-datawatch/crates/galata-datawatch", default-features = false }'
+marker = '$DEP_LINE'
 assert marker in text, "the plant's target moved -- the PLANT is wrong, not the guard"
-replacement = 'galata-datawatch = { path = "../galata-datawatch/crates/galata-datawatch" }'
-path.write_text(text.replace(marker, replacement, 1))
+path.write_text(text.replace(marker, 'galata-datawatch = { path = "../galata-datawatch/crates/galata-datawatch" }', 1))
 PLANTPY
-        echo "planted in $ROOT/Cargo.toml" >&2
+                ;;
+            # A transport added straight to the crate, which leaves the feature
+            # off -- the case the feature assertion cannot see, and the reason
+            # the crate list is still here.
+            venue-transport)
+                python3 - "$ROOT/crates/galata-tower/Cargo.toml" <<'PLANTPY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+marker = "[dependencies]\n"
+assert marker in text, "the plant's target moved -- the PLANT is wrong, not the guard"
+at = text.index(marker) + len(marker)
+path.write_text(text[:at] + 'reqwest = "0.13"  # planted by check-no-capture-loop.sh\n' + text[at:])
+PLANTPY
+                ;;
+            *)
+                echo "check-no-capture-loop: unknown plant $PLANT" >&2
+                exit 2
+                ;;
+        esac
+        echo "planted ($PLANT)" >&2
         ;;
     check)
         cd "$ROOT"
+        # The rule itself.
+        if cargo tree -p galata-tower -e features 2>/dev/null \
+            | grep -qF 'galata-datawatch feature "capture"'; then
+            echo "check-no-capture-loop: the capture feature is ON." >&2
+            echo "  galata-datawatch must be taken with default-features = false. The tower" >&2
+            echo "  watches the record; it has no use for the machinery that fills it." >&2
+            exit 1
+        fi
+        # The second net: a transport added directly leaves the feature off.
         FOUND=$(cargo tree -p galata-tower --prefix none 2>/dev/null \
             | awk '{print $1}' | sort -u \
             | grep -xE "$FORBIDDEN" || true)
         if [[ -n "$FOUND" ]]; then
-            echo "check-no-capture-loop: the tower links the capture transport:" >&2
+            echo "check-no-capture-loop: a venue transport is in the tree:" >&2
             echo "$FOUND" | sed 's/^/    /' >&2
-            echo "  A screen that reads parquet must not compile a websocket stack to do it." >&2
-            echo "  galata-datawatch is taken with default-features = false." >&2
+            echo "  The capture feature is off, so this was added directly. A screen that" >&2
+            echo "  reads parquet must not compile a websocket stack to do it." >&2
             exit 1
         fi
         TOTAL=$(cargo tree -p galata-tower --prefix none 2>/dev/null | awk '{print $1}' | sort -u | wc -l | tr -d ' ')
-        echo "no capture loop: ok. $TOTAL crates, and none of the venue transport among them"
+        echo "no capture loop: ok. the capture feature is off, and no venue transport in $TOTAL crates"
         ;;
 esac

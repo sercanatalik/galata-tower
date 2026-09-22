@@ -32,13 +32,22 @@ This tree links **no capture loop**, and that is checked rather than claimed:
 
 `galata-datawatch` is taken with `default-features = false`, which is one word
 in a manifest and **85 crates** in the tree — 168 against 253, measured here.
-Turn the feature on and `reqwest`, `rustls`, `tokio-tungstenite`, `tungstenite`,
-`rustls-pki-types` and `webpki-roots` arrive behind a screen whose job is to
-read parquet. The guard is watched failing, by planting exactly that.
+The guard asserts exactly that: `cargo tree -e features` names
+`galata-datawatch feature "capture"` when it is on, and the guard greps for it,
+so the rule is checked rather than approximated.
 
-`tokio`, `hyper` and `hyper-util` *are* here and are fine. They are axum's, and
-a server needs a server. The rule is not "no async" — it is "nothing that exists
-to talk to a venue".
+**The rule is not "no async" — it is "nothing that exists to talk to a venue".**
+`tokio`, `hyper` and `hyper-util` are here and are fine: they are axum's, and a
+server needs a server. So is `rustls`, once `galata-broker` arrives, because
+NATS runs over TLS and TLS exists to talk to anything. This guard forbade it
+until 2026-09-22 for a reason its own header said was not the rule; the list now
+names the venue transports — `tokio-tungstenite`, `tungstenite`, `reqwest` — as
+a second net for one added directly, since that leaves the feature off.
+
+Both halves are watched failing: turning the feature on, and adding a transport
+to the manifest. Verified with `galata-broker` present — 243 crates, `rustls`
+among them, guard green — and still red if the capture feature is on beside it,
+so the broker is not a hole.
 
 ## The contract is generated, not written
 
