@@ -28,6 +28,25 @@
         }
       }
     },
+    "/v1/coverage": {
+      "get": {
+        "summary": "How much of each day the record holds.",
+        "description": "**The question nothing else answered**: *is this day usable?* That a day\nexists, that it wants compacting, and that some time is missing across the\nwhole record are three different facts, and none of them is this one.\n\nEvery figure is in our clock. `recv_micros` is what the partitions are\ndated by, what a gap's bounds are written in, and what *did we have this\ndata* means — the predecessor puts it in one line: *\"recv_micros is what\ncoverage, gaps and latency are measured in.\"*",
+        "operationId": "coverage",
+        "responses": {
+          "200": {
+            "description": "How much of each day the record covers, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Covered"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/failures": {
       "get": {
         "summary": "What the record says it could not parse.",
@@ -487,6 +506,81 @@
             "type": "integer",
             "format": "int64",
             "description": "Its end."
+          }
+        }
+      },
+      "Covered": {
+        "type": "object",
+        "description": "What the record covers, by day.\n\nNamed `Covered` because `Coverage` is already the gaps summary's — two\ndifferent questions about the same absences.",
+        "required": [
+          "days"
+        ],
+        "properties": {
+          "days": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DayCoverage"
+            },
+            "description": "Newest day first."
+          }
+        }
+      },
+      "DayCoverage": {
+        "type": "object",
+        "description": "One day of one dataset, and how much of it the record holds.",
+        "required": [
+          "venue",
+          "kind",
+          "date",
+          "window_from_micros",
+          "window_to_micros",
+          "window_micros",
+          "missing_micros",
+          "covered_micros",
+          "rows"
+        ],
+        "properties": {
+          "covered_micros": {
+            "type": "integer",
+            "format": "int64",
+            "description": "What is left: `window_micros - missing_micros`."
+          },
+          "date": {
+            "type": "string",
+            "description": "The day, on the calendar the partitions use."
+          },
+          "kind": {
+            "type": "string",
+            "description": "The dataset."
+          },
+          "missing_micros": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Time the record STATES is missing inside the window.\n\nThe union of the day's gap intervals, clipped to the window — never the\nsum of the gap rows, which overstates by the number of instruments\naffected."
+          },
+          "rows": {
+            "type": "integer",
+            "description": "How many rows stand behind it.",
+            "minimum": 0
+          },
+          "venue": {
+            "type": "string",
+            "description": "The venue."
+          },
+          "window_from_micros": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The start of the time this day's record accounts for, in our clock.\n\n**Accounted for, never assumed.** Not midnight: a day whose capture\nbegan at noon says nothing about its morning, and claiming the morning\neither way would invent an absence or hide one.\n\nBut a STATED gap is not silence — it is the record saying *this time\nwas missing* — so the window covers the observed rows AND the day's\nrecorded gaps. The first version used arrivals alone and silently\ndiscarded a 6½-hour downtime gap that ended where capture resumed: the\nrecord had accounted for that morning and the figure threw it away."
+          },
+          "window_micros": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The window's length."
+          },
+          "window_to_micros": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The last arrival."
           }
         }
       },

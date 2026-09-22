@@ -932,6 +932,33 @@ async fn failures(State(tower): State<Tower>) -> Response {
     }
 }
 
+/// How much of each day the record holds.
+///
+/// **The question nothing else answered**: *is this day usable?* That a day
+/// exists, that it wants compacting, and that some time is missing across the
+/// whole record are three different facts, and none of them is this one.
+///
+/// Every figure is in our clock. `recv_micros` is what the partitions are
+/// dated by, what a gap's bounds are written in, and what *did we have this
+/// data* means — the predecessor puts it in one line: *"recv_micros is what
+/// coverage, gaps and latency are measured in."*
+#[utoipa::path(
+    get,
+    path = "/v1/coverage",
+    responses((status = 200, description = "How much of each day the record covers, newest first", body = tape::Covered)),
+)]
+async fn coverage(State(tower): State<Tower>) -> Response {
+    let root = tower.tape.clone();
+    match tokio::task::spawn_blocking(move || tape::covered_days(&root)).await {
+        Ok(found) => Json(found).into_response(),
+        Err(join) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("the read did not finish: {join}"),
+        )
+            .into_response(),
+    }
+}
+
 /// The document, described once by the routes that answer it.
 #[derive(OpenApi)]
 #[openapi(
@@ -957,6 +984,7 @@ fn router(tower: Tower) -> (Router, utoipa::openapi::OpenApi) {
         .routes(routes!(gaps))
         .routes(routes!(instruments))
         .routes(routes!(failures))
+        .routes(routes!(coverage))
         .with_state(tower)
         .split_for_parts()
 }

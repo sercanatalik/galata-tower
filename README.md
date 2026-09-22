@@ -43,6 +43,7 @@ than from anything a capture process says about itself:
   GET /v1/gaps         what the record says is missing, by cause
   GET /v1/instruments  every instrument the record holds, and when each was last seen
   GET /v1/failures     what the record could not parse, by error
+  GET /v1/coverage     how much of each day the record holds, by dataset
   GET /v1/status       live state, as server-sent events: venue status, the
                        broker's reachability, and when the record advances
   GET /v1/tape/{kind}  a window of one dataset, bounded by what is durable

@@ -21,6 +21,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/coverage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * How much of each day the record holds.
+         * @description **The question nothing else answered**: *is this day usable?* That a day
+         *     exists, that it wants compacting, and that some time is missing across the
+         *     whole record are three different facts, and none of them is this one.
+         *
+         *     Every figure is in our clock. `recv_micros` is what the partitions are
+         *     dated by, what a gap's bounds are written in, and what *did we have this
+         *     data* means — the predecessor puts it in one line: *"recv_micros is what
+         *     coverage, gaps and latency are measured in."*
+         */
+        get: operations["coverage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/failures": {
         parameters: {
             query?: never;
@@ -326,6 +353,66 @@ export interface components {
              */
             to: number;
         };
+        /**
+         * @description What the record covers, by day.
+         *
+         *     Named `Covered` because `Coverage` is already the gaps summary's — two
+         *     different questions about the same absences.
+         */
+        Covered: {
+            /** @description Newest day first. */
+            days: components["schemas"]["DayCoverage"][];
+        };
+        /** @description One day of one dataset, and how much of it the record holds. */
+        DayCoverage: {
+            /**
+             * Format: int64
+             * @description What is left: `window_micros - missing_micros`.
+             */
+            covered_micros: number;
+            /** @description The day, on the calendar the partitions use. */
+            date: string;
+            /** @description The dataset. */
+            kind: string;
+            /**
+             * Format: int64
+             * @description Time the record STATES is missing inside the window.
+             *
+             *     The union of the day's gap intervals, clipped to the window — never the
+             *     sum of the gap rows, which overstates by the number of instruments
+             *     affected.
+             */
+            missing_micros: number;
+            /** @description How many rows stand behind it. */
+            rows: number;
+            /** @description The venue. */
+            venue: string;
+            /**
+             * Format: int64
+             * @description The start of the time this day's record accounts for, in our clock.
+             *
+             *     **Accounted for, never assumed.** Not midnight: a day whose capture
+             *     began at noon says nothing about its morning, and claiming the morning
+             *     either way would invent an absence or hide one.
+             *
+             *     But a STATED gap is not silence — it is the record saying *this time
+             *     was missing* — so the window covers the observed rows AND the day's
+             *     recorded gaps. The first version used arrivals alone and silently
+             *     discarded a 6½-hour downtime gap that ended where capture resumed: the
+             *     record had accounted for that morning and the figure threw it away.
+             */
+            window_from_micros: number;
+            /**
+             * Format: int64
+             * @description The window's length.
+             */
+            window_micros: number;
+            /**
+             * Format: int64
+             * @description The last arrival.
+             */
+            window_to_micros: number;
+        };
         /** @description One kind of failure, and how much of it. */
         Failing: {
             /** @description The channel the payload arrived on. */
@@ -540,6 +627,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["About"];
+                };
+            };
+        };
+    };
+    coverage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description How much of each day the record covers, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Covered"];
                 };
             };
         };
