@@ -64,6 +64,16 @@ export interface LiveState {
    * answer honestly.
    */
   advancedAt: Readonly<Record<string, number>>
+  /**
+   * How many times the tower has said the record moved.
+   *
+   * **A count, because an advance is an event.** Keyed on the bounds' VALUES
+   * instead, a `tape` event restating a bound it already held changes nothing
+   * and nothing refetches — which is exactly what happened when this was
+   * tested by taking a dataset away and putting it back. The same rule the
+   * status stream already follows: a gap is an event, never an absence.
+   */
+  advances: number
   /** Reconnects since load. A count, not a verdict. */
   reconnects: number
   /** Snapshots the server told us we missed. A gap is an event, never an absence. */
@@ -79,6 +89,7 @@ let state: LiveState = {
   broker: null,
   bounds: {},
   advancedAt: {},
+  advances: 0,
   reconnects: 0,
   missed: 0,
   venues: new Map(),
@@ -139,6 +150,7 @@ function open() {
     set({
       bounds: { ...state.bounds, [moved.kind]: moved.bound },
       advancedAt: { ...state.advancedAt, [moved.kind]: Date.now() },
+      advances: state.advances + 1,
       connected: true,
     })
   })
@@ -301,43 +313,66 @@ export function silenceReason(silence: Silence): string {
 }
 
 /**
- * Refetch this kind's reads when the record advances, and not otherwise.
+ * How long since this kind's record last advanced, in whole seconds.
  *
- * **Told, never asking.** A `refetchInterval` would decode 39,231 rows on a
- * timer to usually learn nothing; a conditional request would still cost a
- * round trip per browser per interval to be told nothing happened. The tower
- * holds an open channel and watches the bound once for everybody, so the
- * browser reads only when there is something new to read.
+ * **Reporting only.** This used to invalidate queries as well, with a
+ * predicate that matched `/v1/tape/{kind}` — written for the two panels that
+ * read the tape, and then inherited unchanged by five that did not. Refetching
+ * is `useFollowTheRecord`'s, mounted once; this answers the question six of
+ * its seven callers actually asked.
  *
- * Returns how long since this kind last advanced, in whole seconds, or null if
- * it never has — because a current table and an hour-old one are otherwise
- * identical, which is the defect the whole change is about.
+ * `null` where the kind has never advanced, because a current table and one
+ * from an hour ago are otherwise identical.
  */
 export function useRecordAdvances(kind: string): number | null {
   const live = useLiveStatus()
-  const client = useQueryClient()
-  const bound = live.bounds[kind]
-
-  useEffect(() => {
-    if (bound === undefined) return
-    // Matched by predicate rather than by rebuilding the key. The key
-    // openapi-react-query makes carries the full params, so an equality test
-    // would have to restate every query's window and limit — three places to
-    // fall out of step instead of one predicate that reads the kind.
-    client.invalidateQueries({
-      predicate: (query) => {
-        const key = query.queryKey as unknown[]
-        if (key[1] !== '/v1/tape/{kind}') return false
-        const params = key[2] as { params?: { path?: { kind?: string } } } | undefined
-        return params?.params?.path?.kind === kind
-      },
-    })
-  }, [bound, kind, client])
-
   const at = live.advancedAt[kind]
   // `live.tick` is read so this recomputes once a second without a message.
   void live.tick
   return at === undefined ? null : sinceArrival(at)
+}
+
+/**
+ * Refetch what the record feeds, when the record moves.
+ *
+ * **Mounted once, beside the panels — not once per panel.** This replaced a
+ * predicate inside `useRecordAdvances` that matched only `/v1/tape/{kind}`.
+ * It was written for the two panels that read the tape, and five later panels
+ * inherited the hook, printed *"advanced 2s ago"*, and never refetched: a
+ * claim about freshness the panel did not keep, which is the same defect as a
+ * reassuring sentence during an outage.
+ *
+ * **Everything, rather than a list.** When the record moves, every figure
+ * derived from it is stale — partitions, overdue days, instruments, coverage,
+ * rates, failures, the tape and the chart. A predicate naming some of them is
+ * a second list of what the record feeds, and the one that existed had already
+ * fallen out of step with the panels. TanStack refetches only what is mounted.
+ *
+ * **Measured, and a cheaper shape deliberately not built.** Three routes fold
+ * the whole tape on every request — `/v1/instruments` 168ms, `/v1/coverage`
+ * 171ms, `/v1/rates` 162ms — so an advance costs about 500ms of decode.
+ * (`/v1/gaps` is 1.5ms and `/v1/failures` 0.8ms; they read one dataset and a
+ * directory walk.) That is affordable because the tape is written by
+ * `galata-tape-rebuild` as a per-date backfill, so it advances when a rebuild
+ * runs and not continuously.
+ *
+ * **When to revisit:** if the tape ever becomes a streaming projection rather
+ * than a rebuild, those three folds become 500ms per advance per browser, and
+ * the answer is one shared fold behind the tower's own bound watcher — which
+ * already knows exactly when to invalidate it. Until then it would be a cache
+ * with no invalidation problem to solve.
+ */
+export function useFollowTheRecord(): void {
+  const live = useLiveStatus()
+  const client = useQueryClient()
+
+  useEffect(() => {
+    // Zero is the opening state: a board frame is where the record STANDS, not
+    // an advance, and refetching everything on connect would undo the read the
+    // page has just done.
+    if (live.advances === 0) return
+    client.invalidateQueries()
+  }, [live.advances, client])
 }
 
 /**

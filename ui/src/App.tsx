@@ -1,5 +1,12 @@
 import { $api } from './contract/client'
-import { heardAgo, silenceReason, sinceArrival, useLiveStatus, whySilent } from './live/status'
+import {
+  heardAgo,
+  silenceReason,
+  sinceArrival,
+  useFollowTheRecord,
+  useLiveStatus,
+  whySilent,
+} from './live/status'
 import Boundary from './Boundary'
 import Candles from './Candles'
 import Coverage from './Coverage'
@@ -145,6 +152,10 @@ function Status() {
  * be.
  */
 export default function App() {
+  // **Mounted once, here.** When the record moves, everything derived from it
+  // is stale; the alternative was a predicate inside each panel's hook, which
+  // had already fallen out of step with five of them.
+  useFollowTheRecord()
   return (
     <main>
       <Header />
