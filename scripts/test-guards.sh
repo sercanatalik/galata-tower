@@ -66,6 +66,12 @@ copy_tree() {
     tar -cf - -C "$ROOT" \
         --exclude=./target --exclude=./.git --exclude=./ui/node_modules . \
         | tar -xf - -C "$dest"
+    # `ui/node_modules` is excluded because it is tens of thousands of files
+    # per guard. The guards that need it install it themselves, frozen —
+    # and it must NOT be symlinked in instead: `pnpm install` wants to
+    # replace a modules directory it did not create, and aborts without a
+    # TTY, which turned check-dist-drift red on a clean copy when that was
+    # tried.
     echo "$dest"
 }
 

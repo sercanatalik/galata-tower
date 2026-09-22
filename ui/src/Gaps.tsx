@@ -14,8 +14,13 @@ const WHOLE_TAPE = { from: 0, to: 9_000_000_000_000_000 }
  * one, which it did to an earlier draft of this paragraph. Nothing here needs
  * one either way.
  */
-function forHumans(micros: number): string {
+export function forHumans(micros: number): string {
   const seconds = Math.round(micros / 1_000_000)
+  // **A sub-second gap is still a gap.** Rounding one to `0s` reads as "no
+  // gap", which is the single thing this panel must never say when the record
+  // says otherwise — and it is what this returned until a test was written
+  // whose name contradicted its own assertion.
+  if (micros > 0 && seconds === 0) return '<1s'
   if (seconds < 60) return `${seconds}s`
   if (seconds < 3600) return `${Math.round(seconds / 60)}m`
   if (seconds < 86_400) return `${(seconds / 3600).toFixed(1)}h`

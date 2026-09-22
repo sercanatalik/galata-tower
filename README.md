@@ -90,6 +90,27 @@ The guard regenerates twice and compares before trusting the diff, because a
 byte comparison is only fair over a deterministic generator — and a flaky guard
 teaches people to ignore it.
 
+## Testing the screen
+
+```sh
+cd ui && pnpm test
+```
+
+The server's tests and the screen's are separate suites, and until 2026-09-22
+there was only one of them. `check-screen-tests.sh` runs the second in the
+gate.
+
+They cover the pure functions and nothing else: money parsing, the two clocks'
+arithmetic, why the screen is silent, and how a duration renders. No jsdom and
+no testing-library — every one of those takes values and returns values, and a
+DOM would cost setup on every run to hold nothing extra. About 130ms.
+
+**What they cannot see is a panel that computes correctly and draws nothing.**
+That is not hypothetical: two panels once asked for wall-clock windows against
+a thirty-three-hour-old tape and rendered empty tables, and a ticker selector
+derived from capped rows offered one instrument of six. Both were found by
+opening the browser, and that stays the answer for anything that renders.
+
 ## Layout
 
 ```
