@@ -21,6 +21,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/gaps": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What the record says is missing, and why.
+         * @description **A gap is never inferred from silence.** This reports intervals the record
+         *     states are gaps; absent rows are not one, and nothing here turns them into
+         *     one.
+         */
+        get: operations["gaps"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/overdue": {
         parameters: {
             query?: never;
@@ -169,6 +191,79 @@ export interface components {
              */
             refusal?: string | null;
         };
+        /** @description What one cause accounts for, over a window. */
+        Cause: {
+            /** @description The cause, as the capture wrote it — `downtime`, `crash_unflushed`. */
+            cause: string;
+            /**
+             * @description Every `clipped` value seen, counted.
+             *
+             *     **How loose the bound is.** A gap bounded by two observed sequence
+             *     numbers and one bounded by a restart are different claims about what
+             *     the record knows; the schema keeps this field so a consumer can tell,
+             *     and a summary that dropped it would be the consumer that could not.
+             */
+            clipped: {
+                [key: string]: number;
+            };
+            /**
+             * Format: int64
+             * @description The earliest start and the latest end, so a screen can place it.
+             */
+            first_micros: number;
+            /** @description How many distinct wall-clock intervals, after merging. */
+            intervals: number;
+            /**
+             * Format: int64
+             * @description The latest end.
+             */
+            last_micros: number;
+            /**
+             * Format: int64
+             * @description **The union of this cause's intervals**, in venue micros.
+             *
+             *     Not the sum of its rows. The tape writes one row per affected
+             *     `(ticker, series)`, so one outage arrives two dozen times; summing them
+             *     reported 32.6 days missing from a 32.6-hour window on the archive this
+             *     was measured against.
+             */
+            missing_micros: number;
+            /**
+             * @description How many rows said so.
+             *
+             *     Beside the duration, never instead of it. Twenty-four rows and one
+             *     interval is not noise — it is how many instrument-series the outage
+             *     touched, which is a fact about the outage and not a second measure of
+             *     its length.
+             */
+            rows: number;
+            /** @description Which series it touched. */
+            series: string[];
+            /** @description How many distinct tickers. */
+            tickers: number;
+        };
+        /** @description The record's gaps over a window, by cause. */
+        Coverage: {
+            /**
+             * Format: int64
+             * @description The tape's durable bound, as every read here reports it.
+             */
+            bound: number;
+            /** @description One entry per cause found, most time missing first. */
+            causes: components["schemas"]["Cause"][];
+            /**
+             * Format: int64
+             * @description The window's start, as asked for.
+             */
+            from: number;
+            /** @description Gap rows folded. Reported so a caller can see what the window held. */
+            rows: number;
+            /**
+             * Format: int64
+             * @description Its end.
+             */
+            to: number;
+        };
         /**
          * @description A closed day still holding more segments than compaction should have left.
          *
@@ -265,6 +360,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["About"];
+                };
+            };
+        };
+    };
+    gaps: {
+        parameters: {
+            query: {
+                /** @description Start, inclusive. */
+                from: number;
+                /** @description End, exclusive. */
+                to: number;
+                /** @description The most rows to return. Defaults to `tape::DEFAULT_LIMIT`. */
+                limit?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Gaps in the window, by cause */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Coverage"];
+                };
+            };
+            /** @description A window that runs backwards */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
                 };
             };
         };

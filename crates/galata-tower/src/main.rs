@@ -777,6 +777,36 @@ async fn tape_view(
     }
 }
 
+/// What the record says is missing, and why.
+///
+/// **A gap is never inferred from silence.** This reports intervals the record
+/// states are gaps; absent rows are not one, and nothing here turns them into
+/// one.
+#[utoipa::path(
+    get,
+    path = "/v1/gaps",
+    params(WindowQuery),
+    responses(
+        (status = 200, description = "Gaps in the window, by cause", body = tape::Coverage),
+        (status = 400, description = "A window that runs backwards", body = String),
+    ),
+)]
+async fn gaps(State(tower): State<Tower>, Query(window): Query<WindowQuery>) -> Response {
+    // Parquet is decoded here, so it does not belong on the async executor.
+    let root = tower.tape.clone();
+    let read =
+        tokio::task::spawn_blocking(move || tape::coverage(&root, window.from, window.to)).await;
+    match read {
+        Ok(Ok(coverage)) => Json(coverage).into_response(),
+        Ok(Err(refusal)) => (StatusCode::BAD_REQUEST, refusal.to_string()).into_response(),
+        Err(join) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("the read did not finish: {join}"),
+        )
+            .into_response(),
+    }
+}
+
 /// The document, described once by the routes that answer it.
 #[derive(OpenApi)]
 #[openapi(
@@ -799,6 +829,7 @@ fn router(tower: Tower) -> (Router, utoipa::openapi::OpenApi) {
         .routes(routes!(overdue))
         .routes(routes!(status))
         .routes(routes!(tape_view))
+        .routes(routes!(gaps))
         .with_state(tower)
         .split_for_parts()
 }

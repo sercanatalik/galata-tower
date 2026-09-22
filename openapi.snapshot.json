@@ -28,6 +28,70 @@
         }
       }
     },
+    "/v1/gaps": {
+      "get": {
+        "summary": "What the record says is missing, and why.",
+        "description": "**A gap is never inferred from silence.** This reports intervals the record\nstates are gaps; absent rows are not one, and nothing here turns them into\none.",
+        "operationId": "gaps",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Start, inclusive.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "End, exclusive.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "The most rows to return. Defaults to `tape::DEFAULT_LIMIT`.",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Gaps in the window, by cause",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Coverage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A window that runs backwards",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/overdue": {
       "get": {
         "summary": "Closed days still holding more segments than compaction should have left.",
@@ -237,6 +301,115 @@
               "null"
             ],
             "description": "What the broker said when it last refused, verbatim.\n\nThe identity type cannot print the password, so this is safe to show."
+          }
+        }
+      },
+      "Cause": {
+        "type": "object",
+        "description": "What one cause accounts for, over a window.",
+        "required": [
+          "cause",
+          "missing_micros",
+          "intervals",
+          "rows",
+          "first_micros",
+          "last_micros",
+          "clipped",
+          "series",
+          "tickers"
+        ],
+        "properties": {
+          "cause": {
+            "type": "string",
+            "description": "The cause, as the capture wrote it — `downtime`, `crash_unflushed`."
+          },
+          "clipped": {
+            "type": "object",
+            "description": "Every `clipped` value seen, counted.\n\n**How loose the bound is.** A gap bounded by two observed sequence\nnumbers and one bounded by a restart are different claims about what\nthe record knows; the schema keeps this field so a consumer can tell,\nand a summary that dropped it would be the consumer that could not.",
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "first_micros": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The earliest start and the latest end, so a screen can place it."
+          },
+          "intervals": {
+            "type": "integer",
+            "description": "How many distinct wall-clock intervals, after merging.",
+            "minimum": 0
+          },
+          "last_micros": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The latest end."
+          },
+          "missing_micros": {
+            "type": "integer",
+            "format": "int64",
+            "description": "**The union of this cause's intervals**, in venue micros.\n\nNot the sum of its rows. The tape writes one row per affected\n`(ticker, series)`, so one outage arrives two dozen times; summing them\nreported 32.6 days missing from a 32.6-hour window on the archive this\nwas measured against."
+          },
+          "rows": {
+            "type": "integer",
+            "description": "How many rows said so.\n\nBeside the duration, never instead of it. Twenty-four rows and one\ninterval is not noise — it is how many instrument-series the outage\ntouched, which is a fact about the outage and not a second measure of\nits length.",
+            "minimum": 0
+          },
+          "series": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Which series it touched."
+          },
+          "tickers": {
+            "type": "integer",
+            "description": "How many distinct tickers.",
+            "minimum": 0
+          }
+        }
+      },
+      "Coverage": {
+        "type": "object",
+        "description": "The record's gaps over a window, by cause.",
+        "required": [
+          "from",
+          "to",
+          "rows",
+          "bound",
+          "causes"
+        ],
+        "properties": {
+          "bound": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The tape's durable bound, as every read here reports it."
+          },
+          "causes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Cause"
+            },
+            "description": "One entry per cause found, most time missing first."
+          },
+          "from": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The window's start, as asked for."
+          },
+          "rows": {
+            "type": "integer",
+            "description": "Gap rows folded. Reported so a caller can see what the window held.",
+            "minimum": 0
+          },
+          "to": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Its end."
           }
         }
       },

@@ -1,6 +1,7 @@
 import { $api } from './contract/client'
 import { heardAgo, silenceReason, sinceArrival, useLiveStatus, whySilent } from './live/status'
 import Candles from './Candles'
+import Gaps from './Gaps'
 import Instruments from './Instruments'
 import Tape from './Tape'
 
@@ -135,6 +136,7 @@ export default function App() {
       <Partitions />
       <Overdue />
       <Candles />
+      <Gaps />
       <Tape />
     </main>
   )

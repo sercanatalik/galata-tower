@@ -17,6 +17,7 @@ than from anything a capture process says about itself:
   GET /v1/about        the archive root, and the tape columns a read can prune on
   GET /v1/partitions   the partitions the record holds
   GET /v1/overdue      closed days still holding more segments than compaction left
+  GET /v1/gaps         what the record says is missing, by cause
   GET /v1/status       live state, as server-sent events: venue status, the
                        broker's reachability, and when the record advances
   GET /v1/tape/{kind}  a window of one dataset, bounded by what is durable
