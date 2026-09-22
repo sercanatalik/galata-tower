@@ -1,0 +1,104 @@
+# The same check the tree runs locally, on every push.
+#
+# **One command, not a list of steps.** `scripts/check-all.sh` already means
+# "everything": seven guards, the harness that proves each guard can fail, the
+# screen's tests, format, clippy and the Rust tests. A workflow that enumerated
+# those separately would be a second definition of "everything" — and the one
+# that drifts is the one nobody runs locally. `check-all.sh` finds its guards
+# by glob, so adding one cannot be forgotten here.
+#
+# **Measured: 1m03s wall locally, 278s of CPU at 503%.** It parallelises, so a
+# two-core runner will take considerably longer. The slow part is
+# `test-guards.sh`, which copies the tree once per plant and builds in each
+# copy — it cannot share a target directory, because that isolation is the
+# whole point of proving a guard can fail. If this job ever needs to be
+# cheaper, cut something other than that.
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A second push to the same branch makes the first one's result irrelevant.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # **A skip is not a pass.** `check-dist-drift.sh` skips visibly when node is
+  # missing, which is right for a contributor without a JS toolchain and wrong
+  # here: CI is the one environment where nobody reads the log, so an absent
+  # toolchain must fail. `check-screen-tests.sh` already fails outright, and
+  # this makes the two agree.
+  GALATA_REQUIRE_DIST_CHECK: "1"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: galata-tower
+    steps:
+      # **Two repositories, side by side.** `Cargo.toml` takes
+      # galata-datawatch by PATH, because that workspace publishes nothing
+      # yet — so a lone checkout cannot build this one at all. The layout
+      # below is the one a developer's machine has, and the one
+      # `test-guards.sh` builds for its scratch copies.
+      #
+      #   $GITHUB_WORKSPACE/galata-tower/
+      #   $GITHUB_WORKSPACE/galata-datawatch/
+      #
+      # When galata-datawatch publishes and those become registry
+      # dependencies, this second checkout stops being needed — the same
+      # sentence that retires the symlink in test-guards.sh.
+      - uses: actions/checkout@v4
+        with:
+          path: galata-tower
+
+      # **Its default branch, not a pinned commit.** The path dependency means
+      # this is compiled against whatever galata-datawatch IS, and every
+      # developer builds against the sibling's working tree. A pinned SHA would
+      # be reproducible and wrong: it would test a combination nobody has, and
+      # would go stale with nothing to update it. The cost is that the same
+      # commit here can pass today and fail tomorrow — which is true
+      # information about a coupling that exists.
+      - uses: actions/checkout@v4
+        with:
+          repository: sercanatalik/galata-datawatch
+          path: galata-datawatch
+
+      # **The toolchain is not named here.** `rust-toolchain.toml` pins it and
+      # rustup honours it, so naming a version would be a second statement of
+      # one fact — and two statements of one fact do not fail when they
+      # disagree, they disagree. This step makes rustup resolve it before the
+      # cache key is computed, because that key includes the rustc version.
+      - name: Resolve the pinned toolchain
+        run: rustc --version && cargo --version
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: galata-tower
+
+      # Two guards build the screen and run its tests, so the JS toolchain is
+      # not optional here — see GALATA_REQUIRE_DIST_CHECK above.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: galata-tower/ui/pnpm-lock.yaml
+
+      # `--locked` so a stale Cargo.lock fails here rather than being updated
+      # under us. Not `--offline`: the guards run `pnpm install` inside scratch
+      # copies, so the store has to stay reachable, and claiming offline while
+      # needing the network would be a comment that lies.
+      - name: Fetch dependencies
+        run: cargo fetch --locked
+
+      - name: check-all
+        run: ./scripts/check-all.sh

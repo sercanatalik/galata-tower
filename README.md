@@ -5,6 +5,7 @@
 
 # galata-tower
 
+[![check](https://github.com/sercanatalik/galata-tower/actions/workflows/check.yml/badge.svg)](https://github.com/sercanatalik/galata-tower/actions/workflows/check.yml)
 [![MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE-MIT)
 [![Rust 1.98+](https://img.shields.io/badge/rust-1.98%2B-b7410e.svg)](rust-toolchain.toml)
 [![Built with axum](https://img.shields.io/badge/server-axum%200.8-000000.svg)](https://github.com/tokio-rs/axum)
