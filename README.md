@@ -3,9 +3,9 @@
 The market-data screen for [galata-datawatch](https://github.com/sercanatalik/galata-datawatch),
 in one binary: an axum read API over the record, and the React app it serves.
 
-> **Skeleton.** The API answers three routes and the screen is a placeholder.
-> What is settled is the shape — the dependency wall, the layout, and what the
-> tower is allowed to know.
+> **Early.** The record and the live status are served and shown; market data
+> and charts are not. What is settled is the shape — the dependency wall, the
+> generated contract, and what the tower is allowed to know.
 
 ## It watches the record, not the worker
 
@@ -17,7 +17,12 @@ than from anything a capture process says about itself:
   GET /v1/about        the archive root, and the tape columns a read can prune on
   GET /v1/partitions   the partitions the record holds
   GET /v1/overdue      closed days still holding more segments than compaction left
+  GET /v1/status       every venue's live status, as server-sent events
 ```
+
+`scripts/check-documented-routes.sh` holds that list to the contract, in both
+directions: a route added without a line here fails, and so does a line for a
+route that is not served.
 
 `/v1/overdue` reports and does not judge. What counts as too many segments is
 the operator's threshold, not a number this binary has an opinion about.
@@ -93,15 +98,19 @@ this tree — so a deployment runs no node process.
 GALATA_ARCHIVE=../galata-datawatch/var/archive cargo run
 ```
 
-`GALATA_TOWER_LISTEN` moves it off `127.0.0.1:8777`. Loopback is the default
-because serving other machines is a deployment decision, made by setting that
-rather than by the binary assuming it.
+`GALATA_TOWER_LISTEN` moves it off `127.0.0.1:8777`, and `GALATA_BROKER` off
+`127.0.0.1:4222`. Loopback is the default for both because serving other
+machines, and reaching another machine's bus, are deployment decisions — made
+by setting these rather than by the binary assuming them.
+
+**The tower starts whether or not a broker answers.** The record is a fact on
+disk and does not need a bus to be true, so a refused connection is reported
+and the record is still served.
 
 ## What is not here yet
 
-- **The screen.** `ui/` holds a placeholder; the React app is ported from the
-  predecessor, which was built as a risk board and has to be repointed.
-- **The live status stream.** `galata-broker` and `status.<venue>` arrive with
-  the status surface, and bring `async-nats` with them.
+- **Market data.** `markets.<venue>.<ticker>.<kind>` is a firehose and needs a
+  different answer from a status timer; the subject root was separated for that
+  reason.
 
 Licensed under the MIT licence.
