@@ -21,6 +21,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/failures": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What the record says it could not parse.
+         * @description **A failure is not a gap.** A gap is a known absence with a cause and
+         *     bounds, and `/v1/gaps` reports it. A failure is a payload that ARRIVED and
+         *     produced no row — the record looks complete and the rows are simply not
+         *     there. The archive has written these since Tier 1 and nothing has ever
+         *     read them back.
+         */
+        get: operations["failures"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/gaps": {
         parameters: {
             query?: never;
@@ -302,6 +326,66 @@ export interface components {
              */
             to: number;
         };
+        /** @description One kind of failure, and how much of it. */
+        Failing: {
+            /** @description The channel the payload arrived on. */
+            channel: string;
+            /** @description What went wrong, in the decoder's own words. */
+            error: string;
+            /** @description How many payloads failed this way. */
+            failures: number;
+            /**
+             * Format: int64
+             * @description When the first and last of them arrived, by our clock.
+             */
+            first_micros: number;
+            /**
+             * Format: int64
+             * @description The payload sequences, at both ends.
+             *
+             *     **The join, offered rather than performed.** The bytes are in the main
+             *     segment under the same sequence; the tower says where to look instead
+             *     of serving venue payloads over HTTP.
+             */
+            first_seq: number;
+            /**
+             * @description The partition it landed under.
+             *
+             *     **Not the same as `channel`**, and both are reported for that reason: a
+             *     `bbo` channel lands under a `quotes` kind, and a live run produced
+             *     `kind=bbo/failures/` beside `kind=quotes/` — a failure row in a
+             *     partition its payload is not in. Reporting one without the other
+             *     reintroduces the confusion the sequence exists to resolve.
+             */
+            kind: string;
+            /**
+             * Format: int64
+             * @description The last arrival.
+             */
+            last_micros: number;
+            /**
+             * Format: int64
+             * @description The last sequence.
+             */
+            last_seq: number;
+            /** @description The venue whose payload it was. */
+            venue: string;
+        };
+        /** @description What the record says failed to normalise. */
+        Failures: {
+            /** @description One entry per distinct failure, most frequent first. */
+            failing: components["schemas"]["Failing"][];
+            /**
+             * @description How many partitions were examined.
+             *
+             *     **So that *none found* and *nothing looked at* are different answers.**
+             *     An empty list against zero partitions is a wrong archive root; against
+             *     thirteen it is a clean record.
+             */
+            partitions: number;
+            /** @description How many carried a `failures/` directory at all. */
+            with_failures: number;
+        };
         /** @description One instrument, as the record holds it. */
         Instrument: {
             /** @description Which dataset, as `/v1/tape/{kind}` spells it. */
@@ -456,6 +540,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["About"];
+                };
+            };
+        };
+    };
+    failures: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description What the record could not parse, by error */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Failures"];
                 };
             };
         };

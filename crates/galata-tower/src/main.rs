@@ -9,6 +9,7 @@
 //! One process serves both halves: the API below, and `ui/dist` embedded at
 //! compile time, so there is no node process in a deployment.
 
+mod failures;
 mod tape;
 
 use std::collections::BTreeMap;
@@ -906,6 +907,31 @@ async fn instruments(State(tower): State<Tower>) -> Response {
     }
 }
 
+/// What the record says it could not parse.
+///
+/// **A failure is not a gap.** A gap is a known absence with a cause and
+/// bounds, and `/v1/gaps` reports it. A failure is a payload that ARRIVED and
+/// produced no row — the record looks complete and the rows are simply not
+/// there. The archive has written these since Tier 1 and nothing has ever
+/// read them back.
+#[utoipa::path(
+    get,
+    path = "/v1/failures",
+    responses((status = 200, description = "What the record could not parse, by error", body = failures::Failures)),
+)]
+async fn failures(State(tower): State<Tower>) -> Response {
+    // A walk and, where there is anything to read, parquet. Not the executor's.
+    let root = tower.archive.clone();
+    match tokio::task::spawn_blocking(move || failures::failures(&root)).await {
+        Ok(found) => Json(found).into_response(),
+        Err(join) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("the read did not finish: {join}"),
+        )
+            .into_response(),
+    }
+}
+
 /// The document, described once by the routes that answer it.
 #[derive(OpenApi)]
 #[openapi(
@@ -930,6 +956,7 @@ fn router(tower: Tower) -> (Router, utoipa::openapi::OpenApi) {
         .routes(routes!(tape_view))
         .routes(routes!(gaps))
         .routes(routes!(instruments))
+        .routes(routes!(failures))
         .with_state(tower)
         .split_for_parts()
 }

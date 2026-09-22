@@ -28,6 +28,25 @@
         }
       }
     },
+    "/v1/failures": {
+      "get": {
+        "summary": "What the record says it could not parse.",
+        "description": "**A failure is not a gap.** A gap is a known absence with a cause and\nbounds, and `/v1/gaps` reports it. A failure is a payload that ARRIVED and\nproduced no row — the record looks complete and the rows are simply not\nthere. The archive has written these since Tier 1 and nothing has ever\nread them back.",
+        "operationId": "failures",
+        "responses": {
+          "200": {
+            "description": "What the record could not parse, by error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failures"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/gaps": {
       "get": {
         "summary": "What the record says is missing, and why.",
@@ -468,6 +487,94 @@
             "type": "integer",
             "format": "int64",
             "description": "Its end."
+          }
+        }
+      },
+      "Failing": {
+        "type": "object",
+        "description": "One kind of failure, and how much of it.",
+        "required": [
+          "venue",
+          "kind",
+          "channel",
+          "error",
+          "failures",
+          "first_micros",
+          "last_micros",
+          "first_seq",
+          "last_seq"
+        ],
+        "properties": {
+          "channel": {
+            "type": "string",
+            "description": "The channel the payload arrived on."
+          },
+          "error": {
+            "type": "string",
+            "description": "What went wrong, in the decoder's own words."
+          },
+          "failures": {
+            "type": "integer",
+            "description": "How many payloads failed this way.",
+            "minimum": 0
+          },
+          "first_micros": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When the first and last of them arrived, by our clock."
+          },
+          "first_seq": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The payload sequences, at both ends.\n\n**The join, offered rather than performed.** The bytes are in the main\nsegment under the same sequence; the tower says where to look instead\nof serving venue payloads over HTTP.",
+            "minimum": 0
+          },
+          "kind": {
+            "type": "string",
+            "description": "The partition it landed under.\n\n**Not the same as `channel`**, and both are reported for that reason: a\n`bbo` channel lands under a `quotes` kind, and a live run produced\n`kind=bbo/failures/` beside `kind=quotes/` — a failure row in a\npartition its payload is not in. Reporting one without the other\nreintroduces the confusion the sequence exists to resolve."
+          },
+          "last_micros": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The last arrival."
+          },
+          "last_seq": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The last sequence.",
+            "minimum": 0
+          },
+          "venue": {
+            "type": "string",
+            "description": "The venue whose payload it was."
+          }
+        }
+      },
+      "Failures": {
+        "type": "object",
+        "description": "What the record says failed to normalise.",
+        "required": [
+          "partitions",
+          "with_failures",
+          "failing"
+        ],
+        "properties": {
+          "failing": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Failing"
+            },
+            "description": "One entry per distinct failure, most frequent first."
+          },
+          "partitions": {
+            "type": "integer",
+            "description": "How many partitions were examined.\n\n**So that *none found* and *nothing looked at* are different answers.**\nAn empty list against zero partitions is a wrong archive root; against\nthirteen it is a clean record.",
+            "minimum": 0
+          },
+          "with_failures": {
+            "type": "integer",
+            "description": "How many carried a `failures/` directory at all.",
+            "minimum": 0
           }
         }
       },

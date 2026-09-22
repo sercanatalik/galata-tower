@@ -2,6 +2,7 @@ import { $api } from './contract/client'
 import { heardAgo, silenceReason, sinceArrival, useLiveStatus, whySilent } from './live/status'
 import Boundary from './Boundary'
 import Candles from './Candles'
+import Failures from './Failures'
 import Gaps from './Gaps'
 import Instruments from './Instruments'
 import Tape from './Tape'
@@ -162,6 +163,9 @@ export default function App() {
       </Boundary>
       <Boundary name="Gaps">
         <Gaps />
+      </Boundary>
+      <Boundary name="Failures">
+        <Failures />
       </Boundary>
       <Boundary name="Tape">
         <Tape />
