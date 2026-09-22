@@ -1,4 +1,18 @@
-import { heardAgo, silenceReason, useLiveStatus, venueLag, whySilent } from './live/status'
+import { $api } from './contract/client'
+import { heardAgo, useLiveStatus, useRecordAdvances, venueLag } from './live/status'
+
+/**
+ * A venue timestamp as a readable instant, in UTC.
+ *
+ * **Not an age.** `at_micros` is the VENUE's clock; subtracting it from ours
+ * would report the two clocks' disagreement rather than elapsed time, which is
+ * the mistake `heardAgo` exists to avoid and which this panel made before.
+ * Shown as the instant the record holds, on the calendar the partitions use.
+ */
+function stamp(micros: number): string {
+  if (micros <= 0) return '—'
+  return new Date(micros / 1000).toISOString().replace('T', ' ').slice(0, 19)
+}
 
 /** What a capture reports about one instrument's series. */
 type Pair = {
@@ -23,30 +37,41 @@ type Pair = {
  */
 export default function Instruments() {
   const live = useLiveStatus()
+  // **The record leads.** Until 2026-09-22 this panel read `live.venues` and
+  // nothing else, so the one surface naming the instruments was the only one
+  // that could not answer without a broker — in a binary whose whole sentence
+  // is that it watches the record, not the worker. The roadmap asks this tier
+  // for "six instruments, their ages"; against a tape holding all six it
+  // showed zero.
+  useRecordAdvances('quotes')
+  const { data } = $api.useQuery('get', '/v1/instruments')
+  const held = data?.instruments ?? []
 
-  // Keyed by venue, ticker AND series: one instrument has several series and
-  // each can go quiet on its own, so collapsing them would hide a dead
-  // `trades` behind a live `quotes`.
-  const rows: Array<{
-    key: string
-    venue: string
-    pair: Pair
-    observed: number | null
-    received_ms: number
-  }> = []
+  // A venue's live account of one instrument, where one has arrived. Keyed by
+  // venue and ticker: the record calls the dataset a `kind` and the status
+  // calls it a `series`, and where those spellings agree the pair is matched
+  // on all three. A translation table between them would be a third statement
+  // of a naming both sides already make.
+  const livePairs = new Map<string, { pair: Pair; observed: number | null; received_ms: number }>()
   for (const v of live.venues.values()) {
     const body = v.body as { observed_at_micros?: number; pairs?: Pair[] } | null
     for (const pair of body?.pairs ?? []) {
-      rows.push({
-        key: `${v.venue}/${pair.ticker}/${pair.series}`,
-        venue: v.venue,
+      livePairs.set(`${v.venue}/${pair.ticker}/${pair.series}`, {
         pair,
         observed: body?.observed_at_micros ?? null,
         received_ms: v.received_ms,
       })
     }
   }
-  rows.sort((a, b) => a.key.localeCompare(b.key))
+
+  // **Rows are the record's**, one per (venue, ticker, kind) it holds. Each
+  // can go quiet on its own, so they are not collapsed: that would hide a dead
+  // `trades` behind a live `quotes`.
+  const rows = held.map((i) => ({
+    key: `${i.venue}/${i.ticker}/${i.kind}`,
+    ...i,
+    live: livePairs.get(`${i.venue}/${i.ticker}/${i.kind}`),
+  }))
 
   return (
     <section>
@@ -55,17 +80,17 @@ export default function Instruments() {
       </h2>
       {rows.length === 0 ? (
         <p className="muted">
-          {/* The same sentence as the Live panel, from the same helper: two
-              panels that explain the same silence differently are two chances
-              to be wrong about it. */}
-          {silenceReason(whySilent(live))} A capture publishes pairs with its status; the record
-          above does not depend on it.
+          The record holds no instrument. This reads the tape, so it does not
+          need a broker — an empty table here means an empty or unreadable tape
+          root, not a capture that is not running.
         </p>
       ) : (
         <p className="muted">
-          heard — how long the capture had gone without hearing anything, by its own clock · behind
-          — how far the venue&rsquo;s timestamp sits behind our receipt, negative if it claims the
-          future
+          <strong>last</strong> and <strong>rows</strong> are the record&rsquo;s, and need no
+          broker · <strong>heard</strong> and <strong>behind</strong> are the venue&rsquo;s own
+          account of itself and appear only while one is publishing — heard is how long a capture
+          had gone without hearing anything by its own clock, behind is how far the venue&rsquo;s
+          timestamp sits from our receipt, negative if it claims the future
         </p>
       )}
       <table className="tape">
@@ -73,26 +98,38 @@ export default function Instruments() {
           <tr>
             <th>venue</th>
             <th>instrument</th>
-            <th>series</th>
+            <th>dataset</th>
+            <th className="num">last</th>
+            <th className="num">rows</th>
             <th>state</th>
             <th className="num">heard</th>
             <th className="num">behind</th>
           </tr>
         </thead>
         <tbody>
-          {rows.map(({ key, venue, pair, observed, received_ms }) => {
-            const heard = heardAgo(observed, pair.last_recv_micros, received_ms)
-            const lag = venueLag(pair.last_recv_micros, pair.last_event_micros)
+          {rows.map((row) => {
+            const heard = row.live
+              ? heardAgo(row.live.observed, row.live.pair.last_recv_micros, row.live.received_ms)
+              : null
+            const lag = row.live
+              ? venueLag(row.live.pair.last_recv_micros, row.live.pair.last_event_micros)
+              : null
             return (
-              <tr key={key}>
+              <tr key={row.key}>
                 <td>
-                  <code>{venue}</code>
+                  <code>{row.venue}</code>
                 </td>
                 <td>
-                  <code>{pair.ticker ?? '—'}</code>
+                  <code>{row.ticker}</code>
                 </td>
-                <td className="muted">{pair.series ?? '—'}</td>
-                <td className="muted">{pair.state ?? '—'}</td>
+                <td className="muted">{row.kind}</td>
+                {/* The record's own clock, rendered as a date rather than an
+                    age: this is venue time, and subtracting it from ours
+                    would report the two clocks' disagreement instead of
+                    elapsed time — the mistake `heardAgo` exists to avoid. */}
+                <td className="num">{stamp(row.last_micros)}</td>
+                <td className="num">{row.rows.toLocaleString()}</td>
+                <td className="muted">{row.live?.pair.state ?? '—'}</td>
                 <td className="num">{heard === null ? '—' : `${heard}s`}</td>
                 <td className="num">{lag === null ? '—' : `${lag}s`}</td>
               </tr>

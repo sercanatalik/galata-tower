@@ -880,6 +880,32 @@ async fn gaps(State(tower): State<Tower>, Query(window): Query<WindowQuery>) -> 
     }
 }
 
+/// Every instrument the record holds, and when each was last seen.
+///
+/// **The record, not the bus.** The instruments panel read live status and
+/// nothing else until 2026-09-22, so the one surface naming the instruments
+/// was the one that could not answer without a broker — in a binary whose
+/// whole sentence is *it watches the record, not the worker*. The roadmap's
+/// exit condition for this tier asks for *"six instruments, their ages"*, and
+/// it showed zero against a tape holding all six.
+#[utoipa::path(
+    get,
+    path = "/v1/instruments",
+    responses((status = 200, description = "Every instrument the tape holds, newest first", body = tape::Instruments)),
+)]
+async fn instruments(State(tower): State<Tower>) -> Response {
+    // Parquet is decoded here, so it does not belong on the async executor.
+    let root = tower.tape.clone();
+    match tokio::task::spawn_blocking(move || tape::instruments(&root)).await {
+        Ok(found) => Json(found).into_response(),
+        Err(join) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("the read did not finish: {join}"),
+        )
+            .into_response(),
+    }
+}
+
 /// The document, described once by the routes that answer it.
 #[derive(OpenApi)]
 #[openapi(
@@ -903,6 +929,7 @@ fn router(tower: Tower) -> (Router, utoipa::openapi::OpenApi) {
         .routes(routes!(status))
         .routes(routes!(tape_view))
         .routes(routes!(gaps))
+        .routes(routes!(instruments))
         .with_state(tower)
         .split_for_parts()
 }
@@ -1384,6 +1411,49 @@ mod tests {
                 path.display()
             );
         }
+    }
+
+    /// **The roadmap's exit condition for this tier**, on the point it was
+    /// failing: *"shows six instruments, their ages"*. The panel read live
+    /// status and nothing else, so against a tape holding all six it showed
+    /// zero whenever no capture was running — which is the ordinary state of
+    /// a tower reading an archive.
+    #[test]
+    fn the_record_names_its_instruments_without_a_broker() {
+        let Some(root) = std::path::PathBuf::from("../../../galata-datawatch/var/tape")
+            .is_dir()
+            .then(|| std::path::PathBuf::from("../../../galata-datawatch/var/tape"))
+        else {
+            eprintln!("SKIPPED: no tape to read");
+            return;
+        };
+        let found = tape::instruments(&root);
+        let tickers: std::collections::BTreeSet<&str> = found
+            .instruments
+            .iter()
+            .map(|i| i.ticker.as_str())
+            .collect();
+        assert!(
+            tickers.len() >= 6,
+            "the tape holds six instruments and nothing here needs a bus to say so: {tickers:?}"
+        );
+        assert!(found.bound > 0, "and the durable bound comes with them");
+        // Every row counted stands behind something.
+        assert!(found.instruments.iter().all(|i| i.rows > 0));
+    }
+
+    /// A dataset whose rows carry no venue time is still an instrument the
+    /// record holds. `marks` is exactly that — thousands of rows and no
+    /// `at_micros` — and it renders an em dash rather than a fabricated age.
+    #[test]
+    fn an_instrument_with_no_venue_time_still_counts_its_rows() {
+        let nowhere = PathBuf::from("/galata-tower-no-such-tape-root");
+        let found = tape::instruments(&nowhere);
+        assert!(
+            found.instruments.is_empty(),
+            "a root that is not there is silence, not a refusal"
+        );
+        assert_eq!(found.bound, 0);
     }
 
     /// `say` writes both: the stored state for whoever connects next, and the

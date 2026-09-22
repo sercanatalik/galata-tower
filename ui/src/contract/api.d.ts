@@ -43,6 +43,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/instruments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Every instrument the record holds, and when each was last seen.
+         * @description **The record, not the bus.** The instruments panel read live status and
+         *     nothing else until 2026-09-22, so the one surface naming the instruments
+         *     was the one that could not answer without a broker — in a binary whose
+         *     whole sentence is *it watches the record, not the worker*. The roadmap's
+         *     exit condition for this tier asks for *"six instruments, their ages"*, and
+         *     it showed zero against a tape holding all six.
+         */
+        get: operations["instruments"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/overdue": {
         parameters: {
             query?: never;
@@ -277,6 +302,48 @@ export interface components {
              */
             to: number;
         };
+        /** @description One instrument, as the record holds it. */
+        Instrument: {
+            /** @description Which dataset, as `/v1/tape/{kind}` spells it. */
+            kind: string;
+            /**
+             * Format: int64
+             * @description The newest venue time the record holds for it.
+             *
+             *     **Read, never inferred.** The tape's segments carry footer statistics
+             *     for `venue`, `ticker` and `at_micros`, so a max could be had for the
+             *     cost of a footer. It is not taken that way: statistics in this tree may
+             *     answer only *no*, because a wrong bound that EXCLUDES surfaces as a
+             *     missing row while a wrong bound that is REPORTED becomes the answer —
+             *     and arrow-rs has shipped incorrect min/max for strings and for decimals
+             *     more than once.
+             */
+            last_micros: number;
+            /**
+             * @description How many rows stand behind it.
+             *
+             *     One row and four million rows are different facts about an instrument
+             *     the record has seen, and an age alone hides the difference.
+             */
+            rows: number;
+            /** @description The instrument. */
+            ticker: string;
+            /** @description The venue that wrote it. */
+            venue: string;
+        };
+        /** @description What the record holds, by instrument. */
+        Instruments: {
+            /**
+             * Format: int64
+             * @description The tape's durable bound, as every read here reports it.
+             */
+            bound: number;
+            /**
+             * @description Newest first: an operator looks for what is current, or conspicuously
+             *     is not.
+             */
+            instruments: components["schemas"]["Instrument"][];
+        };
         /**
          * @description A closed day still holding more segments than compaction should have left.
          *
@@ -432,6 +499,26 @@ export interface operations {
                 };
                 content: {
                     "text/plain": string;
+                };
+            };
+        };
+    };
+    instruments: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every instrument the tape holds, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Instruments"];
                 };
             };
         };

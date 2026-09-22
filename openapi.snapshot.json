@@ -104,6 +104,25 @@
         }
       }
     },
+    "/v1/instruments": {
+      "get": {
+        "summary": "Every instrument the record holds, and when each was last seen.",
+        "description": "**The record, not the bus.** The instruments panel read live status and\nnothing else until 2026-09-22, so the one surface naming the instruments\nwas the one that could not answer without a broker — in a binary whose\nwhole sentence is *it watches the record, not the worker*. The roadmap's\nexit condition for this tier asks for *\"six instruments, their ages\"*, and\nit showed zero against a tape holding all six.",
+        "operationId": "instruments",
+        "responses": {
+          "200": {
+            "description": "Every instrument the tape holds, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Instruments"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/overdue": {
       "get": {
         "summary": "Closed days still holding more segments than compaction should have left.",
@@ -449,6 +468,63 @@
             "type": "integer",
             "format": "int64",
             "description": "Its end."
+          }
+        }
+      },
+      "Instrument": {
+        "type": "object",
+        "description": "One instrument, as the record holds it.",
+        "required": [
+          "venue",
+          "ticker",
+          "kind",
+          "last_micros",
+          "rows"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "Which dataset, as `/v1/tape/{kind}` spells it."
+          },
+          "last_micros": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The newest venue time the record holds for it.\n\n**Read, never inferred.** The tape's segments carry footer statistics\nfor `venue`, `ticker` and `at_micros`, so a max could be had for the\ncost of a footer. It is not taken that way: statistics in this tree may\nanswer only *no*, because a wrong bound that EXCLUDES surfaces as a\nmissing row while a wrong bound that is REPORTED becomes the answer —\nand arrow-rs has shipped incorrect min/max for strings and for decimals\nmore than once."
+          },
+          "rows": {
+            "type": "integer",
+            "description": "How many rows stand behind it.\n\nOne row and four million rows are different facts about an instrument\nthe record has seen, and an age alone hides the difference.",
+            "minimum": 0
+          },
+          "ticker": {
+            "type": "string",
+            "description": "The instrument."
+          },
+          "venue": {
+            "type": "string",
+            "description": "The venue that wrote it."
+          }
+        }
+      },
+      "Instruments": {
+        "type": "object",
+        "description": "What the record holds, by instrument.",
+        "required": [
+          "bound",
+          "instruments"
+        ],
+        "properties": {
+          "bound": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The tape's durable bound, as every read here reports it."
+          },
+          "instruments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Instrument"
+            },
+            "description": "Newest first: an operator looks for what is current, or conspicuously\nis not."
           }
         }
       },

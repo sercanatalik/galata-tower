@@ -23,6 +23,7 @@ loop, so it cannot be made to run one.
 | **The record** | partitions, overdue compaction, and the archive root it reads |
 | **The tape** | quotes, trades, candles, funding, marks and gaps, capped and newest-first |
 | **The gaps** | what the record says is missing and why, by cause, unioned rather than summed |
+| **The instruments** | every one the record holds, with its age and row count — and no broker needed to say so |
 | **Live status** | every venue's own account of itself, over SSE, level-triggered |
 | **The screen** | embedded at compile time, so a deployment runs no node process |
 
@@ -40,6 +41,7 @@ than from anything a capture process says about itself:
   GET /v1/partitions   the partitions the record holds
   GET /v1/overdue      closed days still holding more segments than compaction left
   GET /v1/gaps         what the record says is missing, by cause
+  GET /v1/instruments  every instrument the record holds, and when each was last seen
   GET /v1/status       live state, as server-sent events: venue status, the
                        broker's reachability, and when the record advances
   GET /v1/tape/{kind}  a window of one dataset, bounded by what is durable

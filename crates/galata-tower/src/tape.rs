@@ -146,12 +146,137 @@ pub fn bounds(root: &Path) -> BTreeMap<String, i64> {
     found
 }
 
+/// One instrument, as the record holds it.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct Instrument {
+    /// The venue that wrote it.
+    pub venue: String,
+    /// The instrument.
+    pub ticker: String,
+    /// Which dataset, as `/v1/tape/{kind}` spells it.
+    pub kind: String,
+    /// The newest venue time the record holds for it.
+    ///
+    /// **Read, never inferred.** The tape's segments carry footer statistics
+    /// for `venue`, `ticker` and `at_micros`, so a max could be had for the
+    /// cost of a footer. It is not taken that way: statistics in this tree may
+    /// answer only *no*, because a wrong bound that EXCLUDES surfaces as a
+    /// missing row while a wrong bound that is REPORTED becomes the answer —
+    /// and arrow-rs has shipped incorrect min/max for strings and for decimals
+    /// more than once.
+    pub last_micros: i64,
+    /// How many rows stand behind it.
+    ///
+    /// One row and four million rows are different facts about an instrument
+    /// the record has seen, and an age alone hides the difference.
+    pub rows: usize,
+}
+
+/// What the record holds, by instrument.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct Instruments {
+    /// The tape's durable bound, as every read here reports it.
+    pub bound: i64,
+    /// Newest first: an operator looks for what is current, or conspicuously
+    /// is not.
+    pub instruments: Vec<Instrument>,
+}
+
+/// Every instrument the tape holds, with when each was last seen.
+///
+/// **Folded from rows, and measured: 170ms for 86,821 rows** across all six
+/// kinds on the tape this was written against. Correct and affordable beats
+/// fast and unfalsifiable — see `Instrument::last_micros` for why the footer
+/// statistics are not used. Typed columns rather than `ArrayFormatter`, which
+/// is 46ms of a 61ms whole-tape read and is not needed to compare three of
+/// them.
+///
+/// Paid once per page, not on a timer: the screen refetches when the `tape`
+/// event says the record moved.
+pub fn instruments(root: &Path) -> Instruments {
+    // (venue, ticker, kind) -> (newest at_micros, rows)
+    let mut seen: BTreeMap<(String, String, &'static str), (i64, usize)> = BTreeMap::new();
+    let mut bound = 0;
+
+    for kind in SERVED {
+        let scope = format!("kind={}", kind.as_str());
+        let scopes = [scope.as_str()];
+        // A kind that has written nothing is silence, not a refusal: the
+        // caller asked what the record holds, and *not this* is an answer.
+        if !galata_datawatch::tape::reader::unwritten(root, &scopes).is_empty() {
+            continue;
+        }
+        let Ok(reader) = galata_datawatch::tape::reader::Reader::open(root, &scopes) else {
+            continue;
+        };
+        bound = bound.max(reader.bound().position);
+        let window = galata_datawatch::tape::reader::Window {
+            kind,
+            from_micros: i64::MIN + 1,
+            to_micros: i64::MAX,
+            ticker: None,
+        };
+        let Ok(batches) = reader.view(window) else {
+            continue;
+        };
+        for batch in &batches {
+            use arrow::array::{Array, Int64Array, StringArray};
+            let venue = batch
+                .column_by_name("venue")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+            let ticker = batch
+                .column_by_name("ticker")
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+            let at = batch
+                .column_by_name("at_micros")
+                .and_then(|c| c.as_any().downcast_ref::<Int64Array>());
+            // A dataset without these columns describes no instrument. Skipped
+            // rather than guessed at, and not an error: the caller asked which
+            // instruments are here.
+            let (Some(venue), Some(ticker)) = (venue, ticker) else {
+                continue;
+            };
+            for i in 0..batch.num_rows() {
+                if venue.is_null(i) || ticker.is_null(i) {
+                    continue;
+                }
+                let key = (
+                    venue.value(i).to_owned(),
+                    ticker.value(i).to_owned(),
+                    kind.as_str(),
+                );
+                // A row with no venue time still counts as a row: it arrived.
+                // It just cannot make the instrument look newer than it is.
+                let when = at.filter(|a| !a.is_null(i)).map(|a| a.value(i));
+                let entry = seen.entry(key).or_insert((i64::MIN, 0));
+                entry.1 += 1;
+                if let Some(when) = when {
+                    entry.0 = entry.0.max(when);
+                }
+            }
+        }
+    }
+
+    let mut instruments: Vec<Instrument> = seen
+        .into_iter()
+        .map(|((venue, ticker, kind), (last_micros, rows))| Instrument {
+            venue,
+            ticker,
+            kind: kind.to_owned(),
+            last_micros,
+            rows,
+        })
+        .collect();
+    instruments.sort_by_key(|i| std::cmp::Reverse(i.last_micros));
+    Instruments { bound, instruments }
+}
+
 /// Every distinct instrument in a window.
 ///
 /// A dataset with no `ticker` column answers with none rather than refusing:
 /// the caller asked which instruments are here, and *none is a column* is the
 /// same answer as *none are here* for its purposes.
-fn instruments(batches: &[RecordBatch]) -> Vec<String> {
+fn tickers_in(batches: &[RecordBatch]) -> Vec<String> {
     let mut found = std::collections::BTreeSet::new();
     for batch in batches {
         let Some(column) = batch
@@ -397,7 +522,7 @@ pub fn view(
         kind: kind.as_str().to_owned(),
         bound: reader.bound().position,
         total,
-        tickers: instruments(&batches),
+        tickers: tickers_in(&batches),
         rows: newest(&batches, limit)?,
     })
 }
