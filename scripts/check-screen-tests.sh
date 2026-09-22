@@ -92,5 +92,15 @@ if ! output=$(pnpm test 2>&1); then
     exit 1
 fi
 
-passed=$(echo "$output" | grep -oE "Tests +[0-9]+ passed" | grep -oE "[0-9]+" | head -1)
-echo "screen tests: ok. ${passed:-?} assertion(s) over the screen's money, clocks and classification (no DOM: a panel that computes right and draws nothing still passes — open the browser)"
+# **`|| true`, and it is load-bearing.** Without it this guard RAN THE TESTS,
+# PASSED THEM, AND THEN KILLED ITSELF formatting the success line: under
+# `set -euo pipefail` an assignment from a pipeline that matched nothing exits
+# non-zero, and `set -e` ends the script before `${passed:-?}` can supply its
+# default. It printed nothing on either stream, so CI reported a failed part
+# with no explanation — twice, because the first fix guessed at the install
+# and hardened the wrong line.
+#
+# The count is decoration. `pnpm test`'s exit code above is the authority, and
+# a guard must not fail because it could not phrase its own success.
+passed=$(echo "$output" | grep -oE "Tests +[0-9]+ passed" | grep -oE "[0-9]+" | head -1 || true)
+echo "screen tests: ok. ${passed:-an unparsed number of} assertion(s) over the screen's money, clocks and classification (no DOM: a panel that computes right and draws nothing still passes — open the browser)"
