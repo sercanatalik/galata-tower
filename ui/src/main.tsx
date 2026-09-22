@@ -15,7 +15,19 @@ const queryClient = new QueryClient({
 const root = document.getElementById('root')
 if (!root) throw new Error('index.html has no #root; the screen has nowhere to mount')
 
-createRoot(root).render(
+createRoot(root, {
+  // **React 19's own hooks for this.** Without them an uncaught throw reaches
+  // only `window.reportError`, and a caught one only `console.error` with
+  // React's wording. Both are reported here in the screen's own words,
+  // because the one thing this tree keeps relearning is that a failure nobody
+  // is told about costs an afternoon.
+  onUncaughtError: (thrown, info) => {
+    console.error('[galata-tower] a throw escaped every boundary', thrown, info)
+  },
+  onCaughtError: (thrown, info) => {
+    console.error('[galata-tower] a panel failed and was contained', thrown, info)
+  },
+}).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <App />

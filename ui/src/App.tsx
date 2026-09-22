@@ -1,5 +1,6 @@
 import { $api } from './contract/client'
 import { heardAgo, silenceReason, sinceArrival, useLiveStatus, whySilent } from './live/status'
+import Boundary from './Boundary'
 import Candles from './Candles'
 import Gaps from './Gaps'
 import Instruments from './Instruments'
@@ -127,17 +128,44 @@ function Status() {
   )
 }
 
+/**
+ * The screen.
+ *
+ * **Each panel inside its own boundary**, because one throwing used to take
+ * every other with it — planted, built and served, the page came back with no
+ * text content at all. These panels read different routes and answer different
+ * questions; there is no reason for a malformed decimal in the tape to remove
+ * the partition listing.
+ *
+ * The header is outside one deliberately: it is the page's own title, and a
+ * boundary around it would render a refusal where the name of the thing should
+ * be.
+ */
 export default function App() {
   return (
     <main>
       <Header />
-      <Status />
-      <Instruments />
-      <Partitions />
-      <Overdue />
-      <Candles />
-      <Gaps />
-      <Tape />
+      <Boundary name="Live">
+        <Status />
+      </Boundary>
+      <Boundary name="Instruments">
+        <Instruments />
+      </Boundary>
+      <Boundary name="Partitions">
+        <Partitions />
+      </Boundary>
+      <Boundary name="Closed, still holding">
+        <Overdue />
+      </Boundary>
+      <Boundary name="Candles">
+        <Candles />
+      </Boundary>
+      <Boundary name="Gaps">
+        <Gaps />
+      </Boundary>
+      <Boundary name="Tape">
+        <Tape />
+      </Boundary>
     </main>
   )
 }
