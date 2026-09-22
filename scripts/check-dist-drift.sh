@@ -34,7 +34,7 @@ set -euo pipefail
 
 VERB=check
 if [[ $# -gt 0 ]]; then
-    case "$1" in check|plant|targets) VERB="$1"; shift ;; --write) VERB=write; shift ;; esac
+    case "$1" in check|plant|plants|targets|expect) VERB="$1"; shift ;; --write) VERB=write; shift ;; esac
 fi
 ROOT="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 UI="$ROOT/ui"
@@ -44,6 +44,16 @@ case "$VERB" in
         echo "ui/package.json"
         echo "ui/pnpm-lock.yaml"
         echo "ui/dist/index.html"
+        exit 0
+        ;;
+    plants)
+        echo stale-dist
+        exit 0
+        ;;
+    expect)
+        # The failure must name the file that differs, not merely be a failure:
+        # a guard whose script broke also exits non-zero.
+        echo "ui/dist is not the build of ui/src"
         exit 0
         ;;
     plant)
