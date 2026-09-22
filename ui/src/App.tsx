@@ -1,6 +1,7 @@
 import { $api } from './contract/client'
-import { ageSeconds, useLiveStatus } from './live/status'
+import { heardAgo, sinceArrival, useLiveStatus } from './live/status'
 import Candles from './Candles'
+import Instruments from './Instruments'
 import Tape from './Tape'
 
 /** A refusal, rendered. A blank page is the worst answer to a server that is not there. */
@@ -111,7 +112,16 @@ function Status() {
         {venues.map((v) => (
           <li key={v.venue}>
             <code>{v.venue}</code>
-            <span className="count">{ageSeconds(v.received_ms)}s ago</span>
+            <span className="count">
+              {/* The capture's own measurement where it has one, and only the
+                  locally elapsed time where it does not. */}
+              {heardAgo(
+                (v.body as { observed_at_micros?: number } | null)?.observed_at_micros,
+                (v.body as { last_flush_micros?: number } | null)?.last_flush_micros,
+                v.received_ms,
+              ) ?? sinceArrival(v.received_ms)}
+              s ago
+            </span>
           </li>
         ))}
       </ul>
@@ -124,6 +134,7 @@ export default function App() {
     <main>
       <Header />
       <Status />
+      <Instruments />
       <Partitions />
       <Overdue />
       <Candles />

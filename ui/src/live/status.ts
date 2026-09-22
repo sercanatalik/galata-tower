@@ -123,7 +123,53 @@ export function useLiveStatus(): LiveState {
   return useSyncExternalStore(subscribe, () => state, () => state)
 }
 
-/** How long ago, in whole seconds, rendered for the eye. */
-export function ageSeconds(received_ms: number): number {
+/**
+ * How long since a snapshot arrived here, in whole seconds.
+ *
+ * **A duration measured locally, which is the one thing this clock can answer.**
+ * It is added to an age the capture measured; it is never subtracted from a
+ * capture's timestamp, because a subtraction across two machines' clocks
+ * reports their disagreement rather than the elapsed time.
+ */
+export function sinceArrival(received_ms: number): number {
   return Math.max(0, Math.round((Date.now() - received_ms) / 1000))
+}
+
+/**
+ * How long a capture had gone without hearing anything, when it looked.
+ *
+ * `observed_at_micros` and `last_recv_micros` are both the CAPTURE's clock, so
+ * subtracting them is meaningful. The locally elapsed time since the snapshot
+ * arrived is added on top, so the number advances between messages without the
+ * browser's clock ever being compared to the capture's.
+ *
+ * This is what the venue panel got wrong: it used `Date.now()` minus arrival
+ * for the whole figure, which reports the viewer's network rather than the
+ * venue's silence.
+ */
+export function heardAgo(
+  observed_at_micros: number | null | undefined,
+  last_recv_micros: number | null | undefined,
+  received_ms: number,
+): number | null {
+  if (!observed_at_micros || !last_recv_micros) return null
+  const measured = Math.round((observed_at_micros - last_recv_micros) / 1_000_000)
+  return Math.max(0, measured) + sinceArrival(received_ms)
+}
+
+/**
+ * How far the venue's own timestamp sits behind our receipt, in seconds.
+ *
+ * **Crosses clocks deliberately.** This is skew and transport together, and it
+ * is the number `PairStatus` keeps both fields to produce — a surface holding
+ * one of them cannot. It can be NEGATIVE, meaning the venue claims data from
+ * the future, and that is shown rather than clamped: hiding it would hide the
+ * finding the two fields exist for.
+ */
+export function venueLag(
+  last_recv_micros: number | null | undefined,
+  last_event_micros: number | null | undefined,
+): number | null {
+  if (!last_recv_micros || !last_event_micros) return null
+  return Math.round((last_recv_micros - last_event_micros) / 1_000_000)
 }
