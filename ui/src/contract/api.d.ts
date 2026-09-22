@@ -121,6 +121,46 @@ export interface components {
             prune_on: string[];
         };
         /**
+         * @description What a browser is handed on connect, and after a gap.
+         *
+         *     The venues are cloned rather than borrowed: a board frame is sent once per
+         *     connection and once per lag, not once per snapshot, and a lifetime in the
+         *     contract's schema would buy nothing at that rate.
+         */
+        Board: {
+            /** @description Whether these venues are current or a record of an interrupted stream. */
+            broker: components["schemas"]["BrokerState"];
+            /** @description Every venue seen since the tower started, newest snapshot each. */
+            venues: components["schemas"]["Snapshot"][];
+        };
+        /**
+         * @description Whether the tower has a status subscription — **reported, not judged**.
+         *
+         *     There is no threshold here and no verdict. The attempt count is a number
+         *     and the refusal is the broker's own words; whether either is acceptable is
+         *     the operator's call, and a tower that decided it would be deciding with
+         *     less information than they have.
+         */
+        BrokerState: {
+            /**
+             * Format: int32
+             * @description Connect attempts since the tower last held a subscription.
+             *
+             *     Zero while connected. It climbs during an outage, which is what makes
+             *     a misconfiguration visible: a wrong password is retried for ever, and
+             *     this is what says so.
+             */
+            attempts: number;
+            /** @description True between a subscription being established and its ending. */
+            connected: boolean;
+            /**
+             * @description What the broker said when it last refused, verbatim.
+             *
+             *     The identity type cannot print the password, so this is safe to show.
+             */
+            refusal?: string | null;
+        };
+        /**
          * @description A closed day still holding more segments than compaction should have left.
          *
          *     **Reported, never judged.** The number is here; whether it is bad belongs to
@@ -259,7 +299,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description A server-sent event stream of venue status snapshots */
+            /** @description A server-sent event stream: a board frame on connect, then status, broker and lagged events */
             200: {
                 headers: {
                     [name: string]: unknown;

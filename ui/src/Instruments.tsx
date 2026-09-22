@@ -1,4 +1,4 @@
-import { heardAgo, useLiveStatus, venueLag } from './live/status'
+import { heardAgo, silenceReason, useLiveStatus, venueLag, whySilent } from './live/status'
 
 /** What a capture reports about one instrument's series. */
 type Pair = {
@@ -55,7 +55,10 @@ export default function Instruments() {
       </h2>
       {rows.length === 0 ? (
         <p className="muted">
-          No venue has reported a pair yet. A capture publishes them with its status; the record
+          {/* The same sentence as the Live panel, from the same helper: two
+              panels that explain the same silence differently are two chances
+              to be wrong about it. */}
+          {silenceReason(whySilent(live))} A capture publishes pairs with its status; the record
           above does not depend on it.
         </p>
       ) : (

@@ -1,5 +1,5 @@
 import { $api } from './contract/client'
-import { heardAgo, sinceArrival, useLiveStatus } from './live/status'
+import { heardAgo, silenceReason, sinceArrival, useLiveStatus, whySilent } from './live/status'
 import Candles from './Candles'
 import Instruments from './Instruments'
 import Tape from './Tape'
@@ -102,10 +102,7 @@ function Status() {
       </p>
       {venues.length === 0 ? (
         <p className="muted">
-          {live.seenBoard
-            ? 'No venue has published status yet.'
-            : 'Waiting for the stream.'}{' '}
-          The record above does not depend on the bus.
+          {silenceReason(whySilent(live))} The record above does not depend on the bus.
         </p>
       ) : null}
       <ul className="rows">

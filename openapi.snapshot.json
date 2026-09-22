@@ -78,7 +78,7 @@
         "operationId": "status",
         "responses": {
           "200": {
-            "description": "A server-sent event stream of venue status snapshots",
+            "description": "A server-sent event stream: a board frame on connect, then status, broker and lagged events",
             "content": {
               "application/json": {
                 "schema": {
@@ -184,6 +184,54 @@
               "type": "string"
             },
             "description": "The tape columns a reader can prune on, from the schema itself."
+          }
+        }
+      },
+      "Board": {
+        "type": "object",
+        "description": "What a browser is handed on connect, and after a gap.\n\nThe venues are cloned rather than borrowed: a board frame is sent once per\nconnection and once per lag, not once per snapshot, and a lifetime in the\ncontract's schema would buy nothing at that rate.",
+        "required": [
+          "broker",
+          "venues"
+        ],
+        "properties": {
+          "broker": {
+            "$ref": "#/components/schemas/BrokerState",
+            "description": "Whether these venues are current or a record of an interrupted stream."
+          },
+          "venues": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Snapshot"
+            },
+            "description": "Every venue seen since the tower started, newest snapshot each."
+          }
+        }
+      },
+      "BrokerState": {
+        "type": "object",
+        "description": "Whether the tower has a status subscription — **reported, not judged**.\n\nThere is no threshold here and no verdict. The attempt count is a number\nand the refusal is the broker's own words; whether either is acceptable is\nthe operator's call, and a tower that decided it would be deciding with\nless information than they have.",
+        "required": [
+          "connected",
+          "attempts"
+        ],
+        "properties": {
+          "attempts": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Connect attempts since the tower last held a subscription.\n\nZero while connected. It climbs during an outage, which is what makes\na misconfiguration visible: a wrong password is retried for ever, and\nthis is what says so.",
+            "minimum": 0
+          },
+          "connected": {
+            "type": "boolean",
+            "description": "True between a subscription being established and its ending."
+          },
+          "refusal": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What the broker said when it last refused, verbatim.\n\nThe identity type cannot print the password, so this is safe to show."
           }
         }
       },

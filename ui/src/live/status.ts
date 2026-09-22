@@ -21,6 +21,8 @@ import { useSyncExternalStore } from 'react'
 import type { components } from '../contract/api'
 
 type Snapshot = components['schemas']['Snapshot']
+type Board = components['schemas']['Board']
+type BrokerState = components['schemas']['BrokerState']
 
 export interface LiveVenue {
   venue: string
@@ -33,6 +35,17 @@ export interface LiveState {
   connected: boolean
   /** Whether a board frame has arrived, which is how "none yet" is told from "not connected". */
   seenBoard: boolean
+  /**
+   * Whether the TOWER has a broker, which is not whether WE have the tower.
+   *
+   * `connected` above is this browser's `EventSource`. This is the tower's
+   * subscription, and the two are independent: a reachable tower with no
+   * broker is the case that used to render as "no venue has published status
+   * yet" — true of the venues, and false about why.
+   *
+   * Null until a board frame arrives.
+   */
+  broker: BrokerState | null
   /** Reconnects since load. A count, not a verdict. */
   reconnects: number
   /** Snapshots the server told us we missed. A gap is an event, never an absence. */
@@ -45,6 +58,7 @@ export interface LiveState {
 let state: LiveState = {
   connected: false,
   seenBoard: false,
+  broker: null,
   reconnects: 0,
   missed: 0,
   venues: new Map(),
@@ -76,13 +90,23 @@ function open() {
   // answer: here is what is true now. Replace the whole map -- the same
   // replace-never-patch rule as a single snapshot, one level up.
   source.addEventListener('board', (event) => {
-    const snapshots = JSON.parse((event as MessageEvent<string>).data) as Snapshot[]
+    const frame = JSON.parse((event as MessageEvent<string>).data) as Board
     const venues = new Map<string, LiveVenue>()
     const now = Date.now()
-    for (const s of snapshots) {
+    for (const s of frame.venues) {
       venues.set(s.venue, { venue: s.venue, body: s.body, received_ms: now })
     }
-    set({ venues, connected: true, seenBoard: true })
+    // The broker's state rides in the frame so that a browser connecting
+    // DURING an outage learns it immediately, rather than waiting for a
+    // change event that by definition will not come while nothing changes.
+    set({ venues, connected: true, seenBoard: true, broker: frame.broker })
+  })
+
+  // The tower's subscription came or went. A notification that the state
+  // moved; the state itself always arrives in the board frame above.
+  source.addEventListener('broker', (event) => {
+    const broker = JSON.parse((event as MessageEvent<string>).data) as BrokerState
+    set({ broker, connected: true })
   })
 
   source.addEventListener('status', (event) => {
@@ -172,4 +196,65 @@ export function venueLag(
 ): number | null {
   if (!last_recv_micros || !last_event_micros) return null
   return Math.round((last_recv_micros - last_event_micros) / 1_000_000)
+}
+
+/**
+ * Why nothing is listed — the question an empty panel used to answer wrongly.
+ *
+ * **Four states, and they are not interchangeable.** The screen showed one
+ * sentence, "No venue has published status yet", for every one of them; it is
+ * true only of the last, and during an outage it is a reassuring lie that
+ * costs an afternoon of looking at the capture instead of the broker.
+ */
+export type Silence =
+  /** Venues are publishing; there is nothing to explain. */
+  | { case: 'publishing' }
+  /** This browser has not had a board frame yet. Ours, not the tower's. */
+  | { case: 'no-stream' }
+  /** The tower is reachable and has no broker. It is still trying. */
+  | { case: 'no-broker'; attempts: number; refusal: string | null }
+  /** The tower is subscribed and no venue has published. */
+  | { case: 'nothing-published' }
+
+/** Which of the four, from the state the tower sent. */
+export function whySilent(live: LiveState): Silence {
+  if (live.venues.size > 0) return { case: 'publishing' }
+  if (!live.seenBoard) return { case: 'no-stream' }
+  if (live.broker && !live.broker.connected) {
+    return {
+      case: 'no-broker',
+      attempts: live.broker.attempts,
+      refusal: live.broker.refusal ?? null,
+    }
+  }
+  return { case: 'nothing-published' }
+}
+
+/**
+ * The reason as a sentence, shared so two panels cannot disagree about it.
+ *
+ * **Counted, never judged**, like the reconnects beside it: the attempt count
+ * is a number and the refusal is the broker's own words. There is no threshold
+ * here at which this turns red, because the tower does not know one.
+ */
+export function silenceReason(silence: Silence): string {
+  switch (silence.case) {
+    case 'publishing':
+      return ''
+    case 'no-stream':
+      return 'Waiting for the stream.'
+    case 'no-broker': {
+      // Zero is not "it has not tried" — it is a connection that WAS
+      // established and dropped, where the count belongs to the client doing
+      // the reconnecting rather than to us. Saying "0 attempts" would be a
+      // number that means something other than what it reads as.
+      const tries = silence.attempts === 0
+        ? ''
+        : ` — ${silence.attempts === 1 ? '1 attempt' : `${silence.attempts} attempts`} so far`
+      const said = silence.refusal ? `, ${silence.refusal}` : ''
+      return `The tower has no broker${tries}${said}. It keeps trying.`
+    }
+    case 'nothing-published':
+      return 'The tower is subscribed; no venue has published yet.'
+  }
 }

@@ -16,7 +16,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::{StatusCode, header};
@@ -49,8 +49,13 @@ struct Tower {
     archive: PathBuf,
     /// The tape root: `var/tape` beside it.
     tape: PathBuf,
-    /// One subscription's snapshots, fanned to every connected screen.
-    status: broadcast::Sender<Arc<Snapshot>>,
+    /// One subscription's traffic, fanned to every connected screen.
+    ///
+    /// Two kinds of thing on one channel, which is the shape the predecessor's
+    /// tower used (`Live::Entry` / `Live::Alert`) and for the same reason: a
+    /// second channel would need a second subscription per browser and a
+    /// second lag policy, and would buy nothing.
+    status: broadcast::Sender<Live>,
     /// The newest snapshot per venue.
     ///
     /// **Insert or replace, never remove** -- carried from the predecessor's
@@ -63,6 +68,54 @@ struct Tower {
     /// connecting browser and per lag. `Arc<Snapshot>` so a board frame clones
     /// pointers rather than payloads.
     board: Arc<RwLock<BTreeMap<String, Arc<Snapshot>>>>,
+    /// Whether there is a broker at all, for a browser that connects mid-outage.
+    broker: Arc<RwLock<BrokerState>>,
+}
+
+/// One thing the tower has to say.
+///
+/// A status snapshot, or a change in whether there is a broker to get them
+/// from. The second is not decoration: without it an outage and a quiet venue
+/// look identical to a browser, which is the defect this type exists to fix.
+#[derive(Clone, Debug)]
+enum Live {
+    Status(Arc<Snapshot>),
+    Broker(BrokerState),
+}
+
+/// Whether the tower has a status subscription — **reported, not judged**.
+///
+/// There is no threshold here and no verdict. The attempt count is a number
+/// and the refusal is the broker's own words; whether either is acceptable is
+/// the operator's call, and a tower that decided it would be deciding with
+/// less information than they have.
+#[derive(Clone, Debug, Default, Serialize, ToSchema)]
+struct BrokerState {
+    /// True between a subscription being established and its ending.
+    connected: bool,
+    /// Connect attempts since the tower last held a subscription.
+    ///
+    /// Zero while connected. It climbs during an outage, which is what makes
+    /// a misconfiguration visible: a wrong password is retried for ever, and
+    /// this is what says so.
+    attempts: u32,
+    /// What the broker said when it last refused, verbatim.
+    ///
+    /// The identity type cannot print the password, so this is safe to show.
+    refusal: Option<String>,
+}
+
+/// What a browser is handed on connect, and after a gap.
+///
+/// The venues are cloned rather than borrowed: a board frame is sent once per
+/// connection and once per lag, not once per snapshot, and a lifetime in the
+/// contract's schema would buy nothing at that rate.
+#[derive(Serialize, ToSchema)]
+struct Board {
+    /// Whether these venues are current or a record of an interrupted stream.
+    broker: BrokerState,
+    /// Every venue seen since the tower started, newest snapshot each.
+    venues: Vec<Snapshot>,
 }
 
 /// One venue's status, exactly as it was published.
@@ -228,10 +281,25 @@ fn mime_guess_for(path: &str) -> &'static str {
 /// **The tower starts whether or not a broker answers.** The record is a fact
 /// on disk and does not need a bus to be true, so a refused connection is
 /// reported and the process continues serving the half that works.
+///
+/// **And it keeps trying.** Until 2026-09-22 this returned on a refusal and
+/// again when an established subscription ended, so a tower that came up one
+/// second before its broker was accepting stayed statusless until somebody
+/// restarted it — which is exactly what happened while verifying the change
+/// before this one. There is no attempt count at which stopping is better than
+/// continuing: a broker absent for an hour may return in the next minute, and
+/// a tower that gave up is one somebody has to notice first.
+///
+/// The retry lives here rather than in `galata-broker`. `async-nats` has
+/// `retry_on_initial_connect()` and `connect_as` deliberately does not set it,
+/// because the capture needs *a broker that does not answer* (an outage: warn
+/// and carry on) to stay distinct from *a broker that refuses the identity* (a
+/// misconfiguration: exit non-zero). Setting it there would erase that.
 fn subscribe_to_status(
     addr: String,
-    status: broadcast::Sender<Arc<Snapshot>>,
+    status: broadcast::Sender<Live>,
     board: Arc<RwLock<BTreeMap<String, Arc<Snapshot>>>>,
+    broker: Arc<RwLock<BrokerState>>,
 ) {
     tokio::spawn(async move {
         let identity = BrokerIdentity::new(
@@ -239,40 +307,197 @@ fn subscribe_to_status(
             std::env::var(galata_broker::password_var("reader")).unwrap_or_default(),
             galata_broker::password_var("reader"),
         );
-        let mut subscriber = match NatsSubscriber::connect(&addr, &identity, "status.>").await {
-            Ok(subscriber) => subscriber,
-            Err(refusal) => {
-                // Named, not silent, and the password is not in it: the
-                // identity type cannot print it.
-                tracing::warn!(%refusal, "no status stream; the record is still served");
-                return;
+        let mut wait = FIRST_RETRY;
+        let mut attempts: u32 = 0;
+        loop {
+            attempts = attempts.saturating_add(1);
+            match NatsSubscriber::connect(&addr, &identity, "status.>").await {
+                Ok(mut subscriber) => {
+                    tracing::info!(attempts, "subscribed to status.>");
+                    // The ladder is reset by a subscription, not by a
+                    // connection: a broker that accepts and immediately drops
+                    // is still an outage, and backing off from the floor each
+                    // time is the point of the floor being a whole second.
+                    wait = FIRST_RETRY;
+                    attempts = 0;
+                    say(
+                        &broker,
+                        &status,
+                        BrokerState {
+                            connected: true,
+                            attempts: 0,
+                            refusal: None,
+                        },
+                    )
+                    .await;
+                    consume(&mut subscriber, &status, &board, &broker).await;
+                    tracing::warn!("the status subscription ended");
+                    say(
+                        &broker,
+                        &status,
+                        BrokerState {
+                            connected: false,
+                            attempts: 0,
+                            refusal: None,
+                        },
+                    )
+                    .await;
+                }
+                Err(refusal) => {
+                    // Named, not silent, and the password is not in it: the
+                    // identity type cannot print it.
+                    tracing::warn!(%refusal, attempts, "no status stream; the record is still served");
+                    say(
+                        &broker,
+                        &status,
+                        BrokerState {
+                            connected: false,
+                            attempts,
+                            refusal: Some(refusal.to_string()),
+                        },
+                    )
+                    .await;
+                }
+            }
+            tokio::time::sleep(jittered(wait)).await;
+            wait = (wait * 2).min(LONGEST_RETRY);
+        }
+    });
+}
+
+/// One second, then two, then four, to thirty.
+///
+/// The ceiling matters more than the floor. A race at boot should cost about a
+/// second, and an hour of absence should not be an hour of connect attempts;
+/// thirty seconds is slow enough to be free and quick enough that a returning
+/// broker is picked up before anyone reloads the page.
+const FIRST_RETRY: Duration = Duration::from_secs(1);
+const LONGEST_RETRY: Duration = Duration::from_secs(30);
+
+/// The wait, give or take a quarter of itself.
+///
+/// **Jitter, for the reason this tree already gives in the capture's reconnect
+/// path**: retries that fall into lockstep with a broker restarting on a timer
+/// miss it every time, and several towers coming back together should not
+/// arrive as one. It comes from the clock rather than from `rand`, because a
+/// dependency for ±25% on a retry delay is a dependency for nothing — this
+/// needs successive waits to differ, not to be unguessable.
+fn jittered(wait: Duration) -> Duration {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|since| since.subsec_nanos())
+        .unwrap_or(0);
+    let band = (wait.as_millis() as u64) / 2;
+    let offset = if band == 0 {
+        0
+    } else {
+        u64::from(nanos) % band
+    };
+    wait - wait / 4 + Duration::from_millis(offset)
+}
+
+/// Record a broker state and tell every connected browser.
+///
+/// Both, always: the event is the notification that it changed, and the stored
+/// value is what a browser connecting a moment later is handed. Writing one
+/// without the other is how a state stream becomes an event stream.
+async fn say(
+    broker: &Arc<RwLock<BrokerState>>,
+    status: &broadcast::Sender<Live>,
+    next: BrokerState,
+) {
+    *broker.write().await = next.clone();
+    let _ = status.send(Live::Broker(next));
+}
+
+/// Drain one subscription until it ends, reporting the transport meanwhile.
+///
+/// Separated from the supervisor so that the loop above reads as what it is —
+/// connect, consume, back off, repeat — rather than as three levels of nesting.
+///
+/// **There are two retries here, and only one of them is ours.** `async-nats`
+/// reconnects an ESTABLISHED connection by itself, which is why the first
+/// version of this change passed every test above and still claimed a broker
+/// with `nats-server` killed: the subscription had not ended, so nothing
+/// noticed. The loop above handles what the client will not — a connection
+/// never established, since `connect_as` deliberately leaves
+/// `retry_on_initial_connect` unset, and a subscription that genuinely ends.
+/// This watches the client's own state and says what it sees.
+async fn consume(
+    subscriber: &mut NatsSubscriber,
+    status: &broadcast::Sender<Live>,
+    board: &Arc<RwLock<BTreeMap<String, Arc<Snapshot>>>>,
+    broker: &Arc<RwLock<BrokerState>>,
+) {
+    // A second is well under the publisher's cadence, so an outage is on the
+    // screen before the venue ages visibly. Polling rather than subscribing to
+    // the client's event stream keeps the broker crate's surface to one
+    // read-only accessor.
+    let mut watch = tokio::time::interval(Duration::from_secs(1));
+    watch.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut was_up = true;
+    loop {
+        let (subject, payload) = tokio::select! {
+            received = subscriber.next_addressed() => match received {
+                Some(pair) => pair,
+                None => return,
+            },
+            _ = watch.tick() => {
+                let up = subscriber.connected();
+                if up != was_up {
+                    was_up = up;
+                    tracing::warn!(connected = up, "the broker's transport changed");
+                    say(
+                        broker,
+                        status,
+                        BrokerState {
+                            connected: up,
+                            attempts: 0,
+                            refusal: (!up).then(|| {
+                                "the connection dropped; the client is reconnecting".to_owned()
+                            }),
+                        },
+                    )
+                    .await;
+                }
+                continue;
             }
         };
-        tracing::info!("subscribed to status.>");
-        while let Some((subject, payload)) = subscriber.next_addressed().await {
-            // The venue is the subject's second token. A subject that does not
-            // carry one is not a status subject, and is skipped rather than
-            // guessed at.
-            let Some(venue) = subject.split('.').nth(1) else {
-                continue;
-            };
-            let body = serde_json::from_slice(&payload).unwrap_or(serde_json::Value::Null);
-            let snapshot = Arc::new(Snapshot {
-                subject: subject.clone(),
-                venue: venue.to_owned(),
-                body,
-            });
-            // Insert or replace, never remove.
-            board
-                .write()
-                .await
-                .insert(venue.to_owned(), Arc::clone(&snapshot));
-            // `send` fails only when nobody is listening, which is the ordinary
-            // case for a tower with no browser open.
-            let _ = status.send(snapshot);
+        // The venue is the subject's second token. A subject that does not
+        // carry one is not a status subject, and is skipped rather than
+        // guessed at.
+        let Some(venue) = subject.split('.').nth(1) else {
+            continue;
+        };
+        let body = serde_json::from_slice(&payload).unwrap_or(serde_json::Value::Null);
+        let snapshot = Arc::new(Snapshot {
+            subject: subject.clone(),
+            venue: venue.to_owned(),
+            body,
+        });
+        // Insert or replace, never remove.
+        board
+            .write()
+            .await
+            .insert(venue.to_owned(), Arc::clone(&snapshot));
+        // `send` fails only when nobody is listening, which is the ordinary
+        // case for a tower with no browser open.
+        let _ = status.send(Live::Status(snapshot));
+        // A message is proof the transport is up, whatever the last tick saw.
+        if !was_up {
+            was_up = true;
+            say(
+                broker,
+                status,
+                BrokerState {
+                    connected: true,
+                    attempts: 0,
+                    refusal: None,
+                },
+            )
+            .await;
         }
-        tracing::warn!("the status subscription ended");
-    });
+    }
 }
 
 /// Every venue's status, as it arrives.
@@ -283,7 +508,7 @@ fn subscribe_to_status(
 #[utoipa::path(
     get,
     path = "/v1/status",
-    responses((status = 200, description = "A server-sent event stream of venue status snapshots", body = Snapshot)),
+    responses((status = 200, description = "A server-sent event stream: a board frame on connect, then status, broker and lagged events", body = Snapshot)),
 )]
 async fn status(
     State(tower): State<Tower>,
@@ -293,7 +518,8 @@ async fn status(
     // other order has a hole exactly one message wide -- the kind of race that
     // appears once a week in production and never in a test.
     let mut rx = tower.status.subscribe();
-    let opening = board_event(&*tower.board.read().await);
+    let broker = tower.broker.read().await.clone();
+    let opening = board_event(&*tower.board.read().await, broker);
 
     let stream = async_stream::stream! {
         // What is true now, before anything live. Sent even when empty, so a
@@ -301,7 +527,7 @@ async fn status(
         yield Ok(opening);
         loop {
             match rx.recv().await {
-                Ok(snapshot) => yield Ok(event_for(Ok(snapshot))),
+                Ok(live) => yield Ok(event_for(Ok(live))),
                 // The count AND the state. Two events because they say
                 // different things: *you missed n* is worth reporting to an
                 // operator, and *here is what is true* is what fixes it.
@@ -310,7 +536,8 @@ async fn status(
                 // interval per venue.
                 Err(broadcast::error::RecvError::Lagged(missed)) => {
                     yield Ok(event_for(Err(BroadcastStreamRecvError::Lagged(missed))));
-                    yield Ok(board_event(&*tower.board.read().await));
+                    let broker = tower.broker.read().await.clone();
+                    yield Ok(board_event(&*tower.board.read().await, broker));
                 }
                 Err(broadcast::error::RecvError::Closed) => break,
             }
@@ -325,12 +552,19 @@ async fn status(
 /// same question, *what is true now*, and this is it. That is what makes this a
 /// STATE stream rather than an event stream: a message is a notification that
 /// the state moved, and the state itself is always available.
-fn board_event(board: &BTreeMap<String, Arc<Snapshot>>) -> Event {
-    let venues: Vec<&Snapshot> = board.values().map(|s| &**s).collect();
+fn board_event(board: &BTreeMap<String, Arc<Snapshot>>, broker: BrokerState) -> Event {
+    // **The broker's state travels with the venues.** A browser connecting
+    // during an outage used to be handed an empty list and nothing else, and
+    // rendered "no venue has published status yet" — false, reassuring, and
+    // worth an afternoon of looking in the wrong place.
+    let frame = Board {
+        broker,
+        venues: board.values().map(|s| (**s).clone()).collect(),
+    };
     Event::default()
         .event("board")
-        .json_data(&venues)
-        .unwrap_or_else(|_| Event::default().event("board").data("[]"))
+        .json_data(&frame)
+        .unwrap_or_else(|_| Event::default().event("board").data("{}"))
 }
 
 /// One received item as the event the browser sees.
@@ -338,12 +572,17 @@ fn board_event(board: &BTreeMap<String, Arc<Snapshot>>) -> Event {
 /// Separated from the handler so the lag path can be exercised: forcing a real
 /// receiver to fall behind through an HTTP connection is awkward, and a branch
 /// that is only ever reasoned about is a branch that is not held.
-fn event_for(received: Result<Arc<Snapshot>, BroadcastStreamRecvError>) -> Event {
+fn event_for(received: Result<Live, BroadcastStreamRecvError>) -> Event {
     match received {
-        Ok(snapshot) => Event::default()
+        Ok(Live::Status(snapshot)) => Event::default()
             .event("status")
             .json_data(&*snapshot)
             .unwrap_or_else(|_| Event::default().event("status").data("{}")),
+        // Its own event name, so a browser dispatches rather than inspects.
+        Ok(Live::Broker(state)) => Event::default()
+            .event("broker")
+            .json_data(&state)
+            .unwrap_or_else(|_| Event::default().event("broker").data("{}")),
         // **A gap is an event, never an absence.** Dropping is safe only
         // because the stream is level-triggered -- the next snapshot is the
         // whole state -- and even then the browser is told how far it fell
@@ -421,7 +660,7 @@ async fn tape_view(
         title = "galata-tower",
         description = "A read API over the galata-datawatch record. It watches the record, not the worker.",
     ),
-    components(schemas(About, Partition, Overdue))
+    components(schemas(About, Partition, Overdue, Board, BrokerState))
 )]
 struct Contract;
 
@@ -452,6 +691,7 @@ fn dump_openapi() -> Result<String, Box<dyn std::error::Error>> {
         tape: PathBuf::from("."),
         status,
         board: Arc::new(RwLock::new(BTreeMap::new())),
+        broker: Arc::default(),
     });
     Ok(serde_json::to_string_pretty(&api)? + "\n")
 }
@@ -477,6 +717,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let archive = std::env::var("GALATA_ARCHIVE").unwrap_or_else(|_| "var/archive".to_owned());
     let (status, _) = broadcast::channel(STATUS_BACKLOG);
     let board = Arc::new(RwLock::new(BTreeMap::new()));
+    let broker_state: Arc<RwLock<BrokerState>> = Arc::default();
     // Beside the archive by default, which is how datawatch lays them out.
     let tape = std::env::var("GALATA_TAPE").unwrap_or_else(|_| "var/tape".to_owned());
     let tower = Tower {
@@ -484,12 +725,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tape: PathBuf::from(tape),
         status: status.clone(),
         board: Arc::clone(&board),
+        broker: Arc::clone(&broker_state),
     };
 
     // Loopback by default, like everything else here: reaching another machine
     // is a deployment decision, made by setting this.
     let broker = std::env::var("GALATA_BROKER").unwrap_or_else(|_| "127.0.0.1:4222".to_owned());
-    subscribe_to_status(broker, status, board);
+    subscribe_to_status(broker, status, board, broker_state);
 
     // Everything else is the screen, which routes itself.
     let (app, _) = router(tower.clone());
@@ -526,7 +768,7 @@ mod tests {
     /// The event carries the snapshot, and the browser can tell it apart from a gap.
     #[test]
     fn a_snapshot_arrives_as_a_status_event() {
-        let rendered = format!("{:?}", event_for(Ok(snapshot("hyperliquid"))));
+        let rendered = format!("{:?}", event_for(Ok(Live::Status(snapshot("hyperliquid")))));
         assert!(rendered.contains("status"), "{rendered}");
         assert!(rendered.contains("hyperliquid"), "{rendered}");
     }
@@ -538,7 +780,7 @@ mod tests {
         board.insert("hyperliquid".to_owned(), snapshot("hyperliquid"));
         board.insert("rh-chain".to_owned(), snapshot("rh-chain"));
 
-        let rendered = format!("{:?}", board_event(&board));
+        let rendered = format!("{:?}", board_event(&board, BrokerState::default()));
         assert!(rendered.contains("board"), "{rendered}");
         assert!(rendered.contains("hyperliquid"), "{rendered}");
         assert!(rendered.contains("rh-chain"), "{rendered}");
@@ -548,7 +790,10 @@ mod tests {
     /// published" from "not connected".
     #[test]
     fn an_empty_board_is_sent_rather_than_nothing() {
-        let rendered = format!("{:?}", board_event(&BTreeMap::new()));
+        let rendered = format!(
+            "{:?}",
+            board_event(&BTreeMap::new(), BrokerState::default())
+        );
         assert!(rendered.contains("board"), "{rendered}");
     }
 
@@ -572,7 +817,7 @@ mod tests {
         assert_eq!(held.len(), 2, "a quiet venue must not be dropped");
         assert!(held.contains_key("hyperliquid"));
 
-        let rendered = format!("{:?}", board_event(&held));
+        let rendered = format!("{:?}", board_event(&held, BrokerState::default()));
         assert!(
             rendered.contains("hyperliquid"),
             "and it must still reach a browser connecting later: {rendered}"
@@ -583,9 +828,9 @@ mod tests {
     #[tokio::test]
     async fn a_reader_that_falls_behind_is_told_how_many_it_missed() {
         // Capacity 1 so the lag is forced rather than waited for.
-        let (tx, rx) = broadcast::channel::<Arc<Snapshot>>(1);
+        let (tx, rx) = broadcast::channel::<Live>(1);
         for venue in ["a", "b", "c", "d"] {
-            let _ = tx.send(snapshot(venue));
+            let _ = tx.send(Live::Status(snapshot(venue)));
         }
         let mut stream = BroadcastStream::new(rx);
         let first = stream.next().await.expect("the receiver yields");
@@ -599,5 +844,136 @@ mod tests {
             rendered.contains("missed"),
             "and the event must carry the count: {rendered}"
         );
+    }
+
+    /// **The defect this change exists for.** A browser connecting during an
+    /// outage was handed an empty list and rendered "no venue has published
+    /// status yet" — which is a different statement from "there is no broker",
+    /// and was the false one.
+    #[test]
+    fn a_board_frame_during_an_outage_says_there_is_no_broker() {
+        let rendered = format!(
+            "{:?}",
+            board_event(
+                &BTreeMap::new(),
+                BrokerState {
+                    connected: false,
+                    attempts: 7,
+                    refusal: Some("connection refused".to_owned()),
+                },
+            )
+        );
+        assert!(
+            rendered.contains(r#"\"connected\":false"#),
+            "the frame must carry the broker's state, not just the venues: {rendered}"
+        );
+        assert!(
+            rendered.contains(r#"\"attempts\":7"#),
+            "and the attempt count, because that is what makes a wrong password visible: {rendered}"
+        );
+        assert!(
+            rendered.contains("connection refused"),
+            "and the broker's own words: {rendered}"
+        );
+    }
+
+    /// The change is its own event, so the browser dispatches on the name
+    /// rather than inspecting the payload.
+    #[test]
+    fn a_broker_change_arrives_as_its_own_event() {
+        let rendered = format!(
+            "{:?}",
+            event_for(Ok(Live::Broker(BrokerState {
+                connected: true,
+                attempts: 0,
+                refusal: None,
+            })))
+        );
+        assert!(rendered.contains("broker"), "{rendered}");
+        assert!(rendered.contains(r#"\"connected\":true"#), "{rendered}");
+    }
+
+    /// The whole point of the ladder: an absent broker is retried often at
+    /// first and rarely later, and thirty seconds is the ceiling.
+    #[test]
+    fn the_wait_climbs_and_then_stops_climbing() {
+        let mut wait = FIRST_RETRY;
+        let mut seen = vec![wait];
+        for _ in 0..10 {
+            wait = (wait * 2).min(LONGEST_RETRY);
+            seen.push(wait);
+        }
+        assert_eq!(
+            seen[0],
+            Duration::from_secs(1),
+            "a boot race costs a second"
+        );
+        assert_eq!(seen[1], Duration::from_secs(2), "{seen:?}");
+        assert_eq!(
+            *seen.last().expect("ten doublings"),
+            LONGEST_RETRY,
+            "and it settles at the ceiling rather than growing without bound: {seen:?}"
+        );
+        assert!(
+            seen.iter().all(|w| *w <= LONGEST_RETRY),
+            "nothing above the ceiling: {seen:?}"
+        );
+    }
+
+    /// **Jitter, and it has to actually vary.** A `jittered` that returned its
+    /// argument would pass every other test here; this is the one that fails.
+    #[test]
+    fn the_wait_is_jittered_within_a_quarter_either_side() {
+        let wait = Duration::from_secs(8);
+        let mut seen = std::collections::BTreeSet::new();
+        for _ in 0..200 {
+            let got = jittered(wait);
+            assert!(
+                got >= Duration::from_secs(6) && got <= Duration::from_secs(10),
+                "a quarter either side of eight seconds, got {got:?}"
+            );
+            seen.insert(got);
+            // Enough for the clock's nanoseconds to move.
+            std::thread::yield_now();
+        }
+        assert!(
+            seen.len() > 1,
+            "two hundred waits that are all identical are not jitter: {seen:?}"
+        );
+    }
+
+    /// A sub-millisecond wait has no room for a band; it must not divide by zero.
+    #[test]
+    fn a_wait_too_small_to_jitter_is_still_a_wait() {
+        let got = jittered(Duration::from_micros(500));
+        assert!(got <= Duration::from_millis(1), "{got:?}");
+    }
+
+    /// `say` writes both: the stored state for whoever connects next, and the
+    /// event for whoever is connected now. One without the other is how a
+    /// state stream quietly becomes an event stream.
+    #[tokio::test]
+    async fn a_broker_change_is_both_recorded_and_announced() {
+        let broker: Arc<RwLock<BrokerState>> = Arc::default();
+        let (tx, mut rx) = broadcast::channel::<Live>(4);
+        say(
+            &broker,
+            &tx,
+            BrokerState {
+                connected: false,
+                attempts: 3,
+                refusal: Some("no route to host".to_owned()),
+            },
+        )
+        .await;
+
+        let held = broker.read().await.clone();
+        assert_eq!(held.attempts, 3, "the state a later browser is handed");
+        assert!(!held.connected);
+
+        match rx.try_recv().expect("the connected browser is told too") {
+            Live::Broker(state) => assert_eq!(state.attempts, 3),
+            other => panic!("expected a broker event, got {other:?}"),
+        }
     }
 }
