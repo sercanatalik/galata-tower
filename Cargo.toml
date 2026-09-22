@@ -22,6 +22,12 @@ version = "0.1.0"
 # stops being load-bearing.
 galata-segments = { path = "../galata-datawatch/crates/galata-segments" }
 galata-wire = { path = "../galata-datawatch/crates/galata-wire" }
+# The bus. One subscription over `status.>`, fanned to every browser -- which is
+# the case `NatsSubscriber::next_addressed` documents itself for. Measured: it
+# takes this tree from 168 crates to 243, and brings rustls, which is TLS rather
+# than venue transport and is why `check-no-capture-loop.sh` stopped forbidding
+# it (2026-09-22).
+galata-broker = { path = "../galata-datawatch/crates/galata-broker" }
 # **`default-features = false`, and this is the whole dependency argument.**
 # The tape schemas, and none of the capture loop: a tree built without
 # `capture` links ZERO transport crates — 541 down to 279, measured in
@@ -47,10 +53,8 @@ utoipa = { version = "5.5", features = ["axum_extras"] }
 # route is written for axum and described again for the document, and the two
 # drift exactly the way the hand-written types did.
 utoipa-axum = "0.2"
-# NOT declared until a member uses one, because a table naming something
-# nobody references reads as though versions were pinned in one place when
-# they are not:
-#   galata-broker  — the live `status.<venue>` stream, and async-nats with it.
+# A broadcast receiver as a Stream, for the SSE body.
+tokio-stream = { version = "0.1", features = ["sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

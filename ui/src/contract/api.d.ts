@@ -59,6 +59,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Every venue's status, as it arrives.
+         * @description SSE rather than a WebSocket: the traffic is one-directional, and the
+         *     browser's `EventSource` reconnects, backs off and honours `retry:` without a
+         *     line of client code.
+         */
+        get: operations["status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -92,6 +114,21 @@ export interface components {
         Partition: {
             /** @description Its path relative to the archive root. */
             path: string;
+        };
+        /**
+         * @description One venue's status, exactly as it was published.
+         *
+         *     The payload is not parsed here. The tower forwards what the venue said; the
+         *     screen's types come from the contract, and a tower that re-typed the
+         *     snapshot would be a second statement of it free to disagree.
+         */
+        Snapshot: {
+            /** @description The snapshot body, as published. */
+            body: Record<string, never>;
+            /** @description The subject it arrived on, e.g. `status.hyperliquid`. */
+            subject: string;
+            /** @description The venue, taken from the subject. */
+            venue: string;
         };
     };
     responses: never;
@@ -158,6 +195,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Partition"][];
+                };
+            };
+        };
+    };
+    status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A server-sent event stream of venue status snapshots */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Snapshot"];
                 };
             };
         };

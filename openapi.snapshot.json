@@ -70,6 +70,25 @@
           }
         }
       }
+    },
+    "/v1/status": {
+      "get": {
+        "summary": "Every venue's status, as it arrives.",
+        "description": "SSE rather than a WebSocket: the traffic is one-directional, and the\nbrowser's `EventSource` reconnects, backs off and honours `retry:` without a\nline of client code.",
+        "operationId": "status",
+        "responses": {
+          "200": {
+            "description": "A server-sent event stream of venue status snapshots",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Snapshot"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -124,6 +143,29 @@
           "path": {
             "type": "string",
             "description": "Its path relative to the archive root."
+          }
+        }
+      },
+      "Snapshot": {
+        "type": "object",
+        "description": "One venue's status, exactly as it was published.\n\nThe payload is not parsed here. The tower forwards what the venue said; the\nscreen's types come from the contract, and a tower that re-typed the\nsnapshot would be a second statement of it free to disagree.",
+        "required": [
+          "subject",
+          "venue",
+          "body"
+        ],
+        "properties": {
+          "body": {
+            "type": "object",
+            "description": "The snapshot body, as published."
+          },
+          "subject": {
+            "type": "string",
+            "description": "The subject it arrived on, e.g. `status.hyperliquid`."
+          },
+          "venue": {
+            "type": "string",
+            "description": "The venue, taken from the subject."
           }
         }
       }

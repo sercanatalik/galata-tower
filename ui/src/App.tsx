@@ -1,4 +1,5 @@
 import { $api } from './contract/client'
+import { ageSeconds, useLiveStatus } from './live/status'
 
 /** A refusal, rendered. A blank page is the worst answer to a server that is not there. */
 function Refusal({ what, error }: { what: string; error: unknown }) {
@@ -77,10 +78,47 @@ function Overdue() {
   )
 }
 
+/**
+ * The live status of every venue.
+ *
+ * Once seen, never dropped: a venue that stops publishing stays listed with its
+ * age climbing, because absence after presence is the statement an operator
+ * most needs rendered.
+ */
+function Status() {
+  const live = useLiveStatus()
+  const venues = [...live.venues.values()].sort((a, b) => a.venue.localeCompare(b.venue))
+  return (
+    <section>
+      <h2>
+        Live <span className="count">{live.connected ? 'connected' : 'not connected'}</span>
+      </h2>
+      <p className="muted">
+        {live.reconnects} reconnects · {live.missed} snapshots missed
+        {live.missed > 0 ? ' — the stream said so rather than dropping them quietly' : null}
+      </p>
+      {venues.length === 0 ? (
+        <p className="muted">
+          No venue has published status yet. The record above does not depend on the bus.
+        </p>
+      ) : null}
+      <ul className="rows">
+        {venues.map((v) => (
+          <li key={v.venue}>
+            <code>{v.venue}</code>
+            <span className="count">{ageSeconds(v.received_ms)}s ago</span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  )
+}
+
 export default function App() {
   return (
     <main>
       <Header />
+      <Status />
       <Partitions />
       <Overdue />
     </main>
