@@ -117,10 +117,20 @@ by setting these rather than by the binary assuming them.
 disk and does not need a bus to be true, so a refused connection is reported
 and the record is still served.
 
-## What is not here yet
+## What it deliberately does not do
 
-- **Market data.** `markets.<venue>.<ticker>.<kind>` is a firehose and needs a
-  different answer from a status timer; the subject root was separated for that
-  reason.
+- **Read `markets.>` from the broker.** The record has market data, bounded,
+  and an hour of candles lives there anyway. The subject roots were separated
+  so that a dashboard could take `status.>` *without* the firehose, and the
+  `reader` grant covers `status.>` alone.
+
+  The reason is the predecessor's: *"an identity that could read every algo's
+  book is exactly what a password on an operator's laptop should not be."* A
+  process that serves a web page holds that password in its environment.
+
+  The grant is the boundary and the server enforces it;
+  `check-no-market-reach.sh` holds the other side, so that a subscription
+  written here fails in this repository rather than being repaired by widening
+  the grant.
 
 Licensed under the MIT licence.
