@@ -1,11 +1,32 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/logo-on-dark.svg">
+  <img src="assets/logo.svg" alt="" width="72" align="right">
+</picture>
+
 # galata-tower
 
-The market-data screen for [galata-datawatch](https://github.com/sercanatalik/galata-datawatch),
-in one binary: an axum read API over the record, and the React app it serves.
+[![MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE-MIT)
+[![Rust 1.98+](https://img.shields.io/badge/rust-1.98%2B-b7410e.svg)](rust-toolchain.toml)
+[![Built with axum](https://img.shields.io/badge/server-axum%200.8-000000.svg)](https://github.com/tokio-rs/axum)
+[![React 19](https://img.shields.io/badge/screen-React%2019-149eca.svg)](https://react.dev)
 
-> **Early.** The record and the live status are served and shown; market data
-> and charts are not. What is settled is the shape — the dependency wall, the
-> generated contract, and what the tower is allowed to know.
+The market-data screen for
+[galata-datawatch](https://github.com/sercanatalik/galata-datawatch), in one
+binary: an axum read API over the record, and the React app it serves.
+
+**It watches the record, not the worker** — and this binary links no capture
+loop, so it cannot be made to run one.
+
+| | |
+|---|---|
+| **The record** | partitions, overdue compaction, and the archive root it reads |
+| **The tape** | quotes, trades, candles, funding, marks and gaps, capped and newest-first |
+| **The gaps** | what the record says is missing and why, by cause, unioned rather than summed |
+| **Live status** | every venue's own account of itself, over SSE, level-triggered |
+| **The screen** | embedded at compile time, so a deployment runs no node process |
+
+> **0.x.** The shape is settled — the dependency wall, the generated contract,
+> and what the tower is allowed to know. What moves is what is shown.
 
 ## It watches the record, not the worker
 
