@@ -76,10 +76,21 @@ if ! command -v pnpm >/dev/null 2>&1 || ! command -v node >/dev/null 2>&1; then
 fi
 
 cd "$UI"
-# Frozen, because package.json carries `^` ranges: a plain install may resolve a
-# newer minor and the comparison would be about the registry rather than the
-# sources. pnpm freezes by default in CI and not locally, so it is stated.
-pnpm install --frozen-lockfile --silent >/dev/null 2>&1
+# **Not silenced.** This used to be `>/dev/null 2>&1`, and with `set -e` a
+# failed install killed the guard with NO OUTPUT AT ALL — which is exactly
+# how it behaved on its first CI run: no ok line, no failure line, just a
+# missing guard and a count that said something had failed. A check that
+# cannot say why it died is worse than no check.
+#
+# Frozen, because package.json carries `^` ranges: a plain install may resolve
+# a newer minor and the result would be about the registry rather than the
+# code. It is also what makes this runnable in a scratch copy, where there is
+# no node_modules at all.
+if ! installed=$(pnpm install --frozen-lockfile 2>&1); then
+    echo "dist drift: the screen's dependencies would not install" >&2
+    echo "$installed" | tail -20 >&2
+    exit 1
+fi
 
 if [[ "$VERB" == write ]]; then
     pnpm build >/dev/null 2>&1

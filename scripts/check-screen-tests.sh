@@ -70,12 +70,21 @@ PLANTPY
 esac
 
 cd "$UI"
-# Frozen, and for the reason check-dist-drift.sh states beside the same line:
-# package.json carries `^` ranges, and a plain install may resolve a newer
-# minor — which would make a failure here about the registry rather than about
-# the code. It is also what makes this guard runnable in a scratch copy, where
-# there is no node_modules at all.
-pnpm install --frozen-lockfile --silent >/dev/null 2>&1
+# **Not silenced.** This used to be `>/dev/null 2>&1`, and with `set -e` a
+# failed install killed the guard with NO OUTPUT AT ALL — which is exactly
+# how it behaved on its first CI run: no ok line, no failure line, just a
+# missing guard and a count that said something had failed. A check that
+# cannot say why it died is worse than no check.
+#
+# Frozen, because package.json carries `^` ranges: a plain install may resolve
+# a newer minor and the result would be about the registry rather than the
+# code. It is also what makes this runnable in a scratch copy, where there is
+# no node_modules at all.
+if ! installed=$(pnpm install --frozen-lockfile 2>&1); then
+    echo "screen tests: the screen's dependencies would not install" >&2
+    echo "$installed" | tail -20 >&2
+    exit 1
+fi
 
 if ! output=$(pnpm test 2>&1); then
     echo "screen tests: the screen's arithmetic does not hold" >&2
