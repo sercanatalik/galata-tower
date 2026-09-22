@@ -728,6 +728,11 @@ struct WindowQuery {
     to: i64,
     /// The most rows to return. Defaults to `tape::DEFAULT_LIMIT`.
     limit: Option<usize>,
+    /// One instrument, or every instrument in the window.
+    ///
+    /// Matched whole — `BTC` is not `BTCUSD`. Omitted means every, which is
+    /// what a table of the newest rows wants by default.
+    ticker: Option<String>,
 }
 
 /// One dataset, over a window, as the durable bound permits.
@@ -738,7 +743,7 @@ struct WindowQuery {
 #[utoipa::path(
     get,
     path = "/v1/tape/{kind}",
-    params(("kind" = String, Path, description = "quotes, trades, candles, funding or marks"), WindowQuery),
+    params(("kind" = String, Path, description = "quotes, trades, candles, funding, marks or gaps"), WindowQuery),
     responses(
         (status = 200, description = "The window's rows, and the durable bound", body = tape::View),
         (status = 400, description = "An unknown dataset, or a window that runs backwards", body = String),
@@ -763,6 +768,7 @@ async fn tape_view(
             window.from,
             window.to,
             window.limit.unwrap_or(tape::DEFAULT_LIMIT),
+            window.ticker,
         )
     })
     .await;

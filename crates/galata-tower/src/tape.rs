@@ -146,6 +146,29 @@ pub fn bounds(root: &Path) -> BTreeMap<String, i64> {
     found
 }
 
+/// Every distinct instrument in a window.
+///
+/// A dataset with no `ticker` column answers with none rather than refusing:
+/// the caller asked which instruments are here, and *none is a column* is the
+/// same answer as *none are here* for its purposes.
+fn instruments(batches: &[RecordBatch]) -> Vec<String> {
+    let mut found = std::collections::BTreeSet::new();
+    for batch in batches {
+        let Some(column) = batch
+            .column_by_name("ticker")
+            .and_then(|c| c.as_any().downcast_ref::<arrow::array::StringArray>())
+        else {
+            continue;
+        };
+        for i in 0..batch.num_rows() {
+            if !column.is_null(i) {
+                found.insert(column.value(i).to_owned());
+            }
+        }
+    }
+    found.into_iter().collect()
+}
+
 /// A kind, from the name the tape writes for it.
 pub fn kind_of(name: &str) -> Result<Kind, TapeError> {
     SERVED
@@ -191,6 +214,20 @@ pub struct View {
     /// conditionally is one callers learn to ignore, and this is the only thing
     /// distinguishing a capped read from a quiet window.
     pub total: usize,
+    /// Every instrument this read matched, before the cap.
+    ///
+    /// **Before the cap, but after the ticker filter** — and the difference
+    /// matters. The newest forty quotes in this tape are all one instrument,
+    /// so a caller deriving its list from the returned ROWS sees exactly one
+    /// and the other five stay unreachable. That is the gap this field
+    /// closes. It does not claim to list instruments the caller asked to
+    /// exclude: a read naming `BTC` reports `BTC`, and a caller offering a
+    /// choice remembers what an unfiltered read told it.
+    ///
+    /// Folded from the arrow column directly, never through `ArrayFormatter`:
+    /// a distinct-value scan of one string column, bounded by the instrument
+    /// count rather than the row count.
+    pub tickers: Vec<String>,
     /// The rows, each a map of column to value. Decimals are strings.
     ///
     /// When a cap applies these are the NEWEST in the window — a reader
@@ -305,7 +342,15 @@ pub fn rows(batches: &[RecordBatch]) -> Result<Vec<Value>, TapeError> {
 }
 
 /// A window of one dataset, as the durable bound permits.
-pub fn view(root: &Path, kind: Kind, from: i64, to: i64, limit: usize) -> Result<View, TapeError> {
+pub fn view(
+    root: &Path,
+    kind: Kind,
+    from: i64,
+    to: i64,
+    limit: usize,
+    // One instrument, or every instrument in the window.
+    ticker: Option<String>,
+) -> Result<View, TapeError> {
     if limit == 0 {
         return Err(TapeError::NoRows);
     }
@@ -338,6 +383,7 @@ pub fn view(root: &Path, kind: Kind, from: i64, to: i64, limit: usize) -> Result
         kind,
         from_micros: from,
         to_micros: to,
+        ticker,
     };
     let batches = reader.view(window).map_err(|error| TapeError::Unreadable {
         detail: error.to_string(),
@@ -351,6 +397,7 @@ pub fn view(root: &Path, kind: Kind, from: i64, to: i64, limit: usize) -> Result
         kind: kind.as_str().to_owned(),
         bound: reader.bound().position,
         total,
+        tickers: instruments(&batches),
         rows: newest(&batches, limit)?,
     })
 }
@@ -537,6 +584,7 @@ pub fn coverage(root: &Path, from: i64, to: i64) -> Result<Coverage, TapeError> 
             kind,
             from_micros: from,
             to_micros: to,
+            ticker: None,
         })
         .map_err(|error| TapeError::Unreadable {
             detail: error.to_string(),
@@ -709,8 +757,8 @@ mod tests {
             return;
         };
         // The whole of 2026-09-20 in venue micros, and well past it.
-        let view =
-            view(&root, Kind::Quotes, 0, i64::MAX / 2, DEFAULT_LIMIT).expect("the tape reads");
+        let view = view(&root, Kind::Quotes, 0, i64::MAX / 2, DEFAULT_LIMIT, None)
+            .expect("the tape reads");
         assert!(!view.rows.is_empty(), "the tape held no quotes to check");
 
         let row = view.rows[0].as_object().expect("a row is an object");
@@ -746,7 +794,7 @@ mod tests {
             eprintln!("SKIPPED: no tape");
             return;
         };
-        let capped = view(&root, Kind::Quotes, 0, i64::MAX / 2, 40).expect("the tape reads");
+        let capped = view(&root, Kind::Quotes, 0, i64::MAX / 2, 40, None).expect("the tape reads");
         assert_eq!(capped.rows.len(), 40, "the cap applies");
         assert!(
             capped.total > 40,
@@ -755,7 +803,7 @@ mod tests {
         );
 
         // The newest, not the oldest: a reader watching a tape wants its end.
-        let all = view(&root, Kind::Quotes, 0, i64::MAX / 2, usize::MAX).expect("reads");
+        let all = view(&root, Kind::Quotes, 0, i64::MAX / 2, usize::MAX, None).expect("reads");
         assert_eq!(
             all.total, capped.total,
             "the total does not depend on the cap"
@@ -784,6 +832,7 @@ mod tests {
             1_789_938_867_000_000,
             1_789_938_872_000_000,
             DEFAULT_LIMIT,
+            None,
         )
         .expect("reads");
         assert!(!view.rows.is_empty(), "the slice held rows");
@@ -799,7 +848,7 @@ mod tests {
     #[test]
     fn a_limit_of_zero_is_refused() {
         let root = std::path::PathBuf::from(".");
-        let refused = view(&root, Kind::Quotes, 0, 100, 0).expect_err("zero must refuse");
+        let refused = view(&root, Kind::Quotes, 0, 100, 0, None).expect_err("zero must refuse");
         assert!(matches!(refused, TapeError::NoRows), "got {refused:?}");
     }
 
@@ -807,8 +856,8 @@ mod tests {
     #[test]
     fn a_backwards_window_is_refused() {
         let root = std::path::PathBuf::from(".");
-        let refused =
-            view(&root, Kind::Quotes, 100, 50, DEFAULT_LIMIT).expect_err("backwards must refuse");
+        let refused = view(&root, Kind::Quotes, 100, 50, DEFAULT_LIMIT, None)
+            .expect_err("backwards must refuse");
         assert!(
             matches!(refused, TapeError::Backwards { .. }),
             "got {refused:?}"

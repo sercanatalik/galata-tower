@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useChart } from './charts/useChart'
 import { $api } from './contract/client'
 import { dec, plot } from './contract/money'
-import { useRecordAdvances } from './live/status'
+import { useRecordAdvances, useRemembered } from './live/status'
 
 /**
  * Rows are not candles.
@@ -45,18 +45,34 @@ export default function Candles() {
   const advanced = useRecordAdvances('candles')
   const [ticker, setTicker] = useState<string | null>(null)
 
+  // **Ask for the ticker being drawn.** This read 11,932 rows and kept the
+  // 1,960 belonging to the chosen instrument — after the rest had crossed the
+  // wire. The route filters now, so the discarded rows are never sent.
+  //
+  // The first read names no ticker, because the list of instruments comes
+  // from what the window holds and there is nothing to choose from yet.
   const { data, error } = $api.useQuery('get', '/v1/tape/{kind}', {
-    params: { path: { kind: 'candles' }, query: { ...WHOLE_TAPE, limit: CANDLE_LIMIT } },
+    params: {
+      path: { kind: 'candles' },
+      query: { ...WHOLE_TAPE, limit: CANDLE_LIMIT, ...(ticker ? { ticker } : {}) },
+    },
   })
 
   const rows = (data?.rows ?? []) as Row[]
-  const tickers = useMemo(
-    () => [...new Set(rows.map((r) => String(r.ticker ?? '')))].filter(Boolean).sort(),
-    [rows],
-  )
+  // **From the route, and remembered.** Once a ticker is chosen the read
+  // matches only that one, so a list taken from the latest response alone
+  // would collapse to a single entry with no way back.
+  const tickers = useRemembered(data?.tickers)
   // Chosen from what the window holds rather than hardcoded: a tape from
   // another venue has none of these six.
   const chosen = ticker && tickers.includes(ticker) ? ticker : (tickers[0] ?? null)
+  // **Adopt what is being drawn**, so the next read asks for it. The FIRST
+  // read cannot: the instrument list comes from the response, so there is
+  // nothing to name yet. That one read is the price of not hardcoding a list
+  // of tickers; every read after it carries only the rows drawn.
+  useEffect(() => {
+    if (!ticker && chosen) setTicker(chosen)
+  }, [ticker, chosen])
 
   const candles = useMemo(() => {
     if (!chosen) return []

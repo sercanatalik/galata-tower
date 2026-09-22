@@ -42,6 +42,7 @@ fn galata_tower_lib_probe(
         kind,
         from_micros: 0,
         to_micros: 9_000_000_000_000_000,
+        ticker: None,
     };
     let batches = reader.view(window)?;
     Ok(batches.iter().map(|b| b.num_rows()).sum())

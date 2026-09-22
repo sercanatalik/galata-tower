@@ -1,7 +1,7 @@
 import { useState } from 'react'
 
 import { $api } from './contract/client'
-import { useRecordAdvances } from './live/status'
+import { useRecordAdvances, useRemembered } from './live/status'
 import { dec, fmt } from './contract/money'
 
 /**
@@ -45,10 +45,21 @@ export default function Tape() {
   // a refetchInterval here would decode 39,231 rows on a timer to usually
   // learn nothing.
   const advanced = useRecordAdvances('quotes')
+  // **Every instrument, or one.** Six tickers were in the tape and the newest
+  // forty rows were all the busiest one, so five of the six could not be
+  // looked at from here at all. `null` is every, which is what a table of the
+  // newest rows wants by default.
+  const [ticker, setTicker] = useState<string | null>(null)
   const { data, error, isPending } = $api.useQuery('get', '/v1/tape/{kind}', {
     // Ask for what is drawn. The route caps anyway; asking is what stops
     // eleven megabytes crossing to render forty rows.
-    params: { path: { kind: 'quotes' }, query: { ...WHOLE_TAPE, limit: COUNTS[count] } },
+    params: {
+      path: { kind: 'quotes' },
+      // Asked of the ROUTE, not filtered here: filtering in the browser would
+      // still ship every instrument's rows to drop most of them, which is
+      // what the candle chart did.
+      query: { ...WHOLE_TAPE, limit: COUNTS[count], ...(ticker ? { ticker } : {}) },
+    },
   })
 
   if (error) {
@@ -71,6 +82,13 @@ export default function Tape() {
   // bounds the render.
   // The route returns the newest already; this only reverses them for the eye.
   const rows = [...(data?.rows ?? [])].reverse()
+  // **From the route, and remembered.** Deriving this from the returned rows
+  // offered exactly one instrument — the newest forty quotes are all the
+  // busiest ticker, so the other five stayed unreachable, which is the gap
+  // this change is about, reintroduced by its own fix. The route reports what
+  // the read matched, before the cap; once a ticker is chosen that is one
+  // entry, so what an unfiltered read said is held on to.
+  const tickers = useRemembered(data?.tickers)
 
   return (
     <section>
@@ -84,7 +102,19 @@ export default function Tape() {
           <option value="200">200</option>
           <option value="1000">1000</option>
         </select>{' '}
-        quotes
+        quotes{' '}
+        <select value={ticker ?? ''} onChange={(e) => setTicker(e.target.value || null)}>
+          <option value="">every instrument</option>
+          {/* Whatever is already selected stays offered, even when this
+              window's rows no longer include it — otherwise choosing a quiet
+              ticker empties the table and the selector at once, and there is
+              no way back to it. */}
+          {[...new Set([...tickers, ...(ticker ? [ticker] : [])])].sort().map((t) => (
+            <option key={t} value={t}>
+              {t}
+            </option>
+          ))}
+        </select>
         · durable to stream_seq {data?.bound ?? '…'}
         {/* **A stale table and a current one look identical**, which is the
             whole reason this is here. Measured locally against a local

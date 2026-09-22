@@ -327,6 +327,22 @@ export interface components {
              */
             rows: Record<string, never>[];
             /**
+             * @description Every instrument this read matched, before the cap.
+             *
+             *     **Before the cap, but after the ticker filter** — and the difference
+             *     matters. The newest forty quotes in this tape are all one instrument,
+             *     so a caller deriving its list from the returned ROWS sees exactly one
+             *     and the other five stay unreachable. That is the gap this field
+             *     closes. It does not claim to list instruments the caller asked to
+             *     exclude: a read naming `BTC` reports `BTC`, and a caller offering a
+             *     choice remembers what an unfiltered read told it.
+             *
+             *     Folded from the arrow column directly, never through `ArrayFormatter`:
+             *     a distinct-value scan of one string column, bounded by the instrument
+             *     count rather than the row count.
+             */
+            tickers: string[];
+            /**
              * @description How many rows the window holds, before any cap.
              *
              *     **Always present, not only when a cap applied.** A field that appears
@@ -373,6 +389,13 @@ export interface operations {
                 to: number;
                 /** @description The most rows to return. Defaults to `tape::DEFAULT_LIMIT`. */
                 limit?: number | null;
+                /**
+                 * @description One instrument, or every instrument in the window.
+                 *
+                 *     Matched whole — `BTC` is not `BTCUSD`. Omitted means every, which is
+                 *     what a table of the newest rows wants by default.
+                 */
+                ticker?: string | null;
             };
             header?: never;
             path?: never;
@@ -469,10 +492,17 @@ export interface operations {
                 to: number;
                 /** @description The most rows to return. Defaults to `tape::DEFAULT_LIMIT`. */
                 limit?: number | null;
+                /**
+                 * @description One instrument, or every instrument in the window.
+                 *
+                 *     Matched whole — `BTC` is not `BTCUSD`. Omitted means every, which is
+                 *     what a table of the newest rows wants by default.
+                 */
+                ticker?: string | null;
             };
             header?: never;
             path: {
-                /** @description quotes, trades, candles, funding or marks */
+                /** @description quotes, trades, candles, funding, marks or gaps */
                 kind: string;
             };
             cookie?: never;
