@@ -161,6 +161,34 @@ function Status() {
         <p className="muted">
           {silenceReason(whySilent(live))} The record above does not depend on the bus.
         </p>
+      ) : live.broker && !live.broker.connected ? (
+        /* **The bus, said whenever it is gone — not only when there is nothing
+            else to show.**
+
+            This branch used to be the only place the broker's state appeared,
+            reached only when no venue had ever been seen. Once one has, it is
+            never dropped — absence after presence is the statement an operator
+            most needs — so a dead bus rendered as a venue quietly getting
+            older. Found by running a real broker for the first time and then
+            killing it: the screen said `Live connected · 0 reconnects` over
+            `hyperliquid 53s ago`, every clause true and the conclusion wrong.
+
+            `connected` above is the BROWSER's stream to this tower, which is
+            genuinely up. The bus is a different fact and now has its own
+            line.
+
+            **`live.broker &&` is not defensive noise.** It is null until the
+            first board frame arrives, and *not yet told* is not *down* — a
+            screen that announced a lost bus for the moment before it had been
+            told anything would be wrong every single load. */
+        <p className="muted">
+          <strong>The tower has lost the broker.</strong>{' '}
+          {live.broker.refusal ?? 'it is not connected'}
+          {live.broker.attempts > 0 ? ` — ${live.broker.attempts} attempts so far` : null}. Nothing
+          can arrive while it is down, so the ages below are <em>not</em> how long each venue has
+          been quiet — every one of them climbs at the same rate whatever the venue is doing. The
+          record above does not depend on the bus.
+        </p>
       ) : null}
       <ul className="rows">
         {venues.map((v) => (
