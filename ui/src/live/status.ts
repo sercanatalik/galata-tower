@@ -65,26 +65,19 @@ export interface LiveState {
    */
   advancedAt: Readonly<Record<string, number>>
   /**
-   * How many times the tower has said the record moved.
+   * How many times something has happened that means held data may be stale.
    *
-   * **A count, because an advance is an event.** Keyed on the bounds' VALUES
-   * instead, a `tape` event restating a bound it already held changes nothing
-   * and nothing refetches — which is exactly what happened when this was
-   * tested by taking a dataset away and putting it back. The same rule the
-   * status stream already follows: a gap is an event, never an absence.
-   */
-  advances: number
-  /**
-   * How many times the stream has been ESTABLISHED, including the first.
+   * **One number, because two can disagree.** This replaced a pair —
+   * `advances` and `connections` — read only by `useFollowTheRecord`, once as
+   * a guard and once as an effect dependency. Naming different members of that
+   * pair in the two places is a guard that never runs, and neither line is
+   * wrong read alone: it survived review and was found by planting a probe on
+   * this store. One value cannot be mis-paired with itself.
    *
-   * **Distinct from `reconnects`, and the difference is load-bearing.**
-   * `reconnects` counts disconnections, which is what the Live panel reports.
-   * This counts connections, which is when a refetch can actually succeed —
-   * keying the refetch on the disconnection instead fired every query while
-   * the tower was down, and with retries off they stayed refused for ever.
-   * Measured: nine refusals across the screen.
+   * What increments it is [`isAReasonToResync`], which is where the reasoning
+   * lives and where the tests reach.
    */
-  connections: number
+  resyncs: number
   /** Reconnects since load. A count, not a verdict. */
   reconnects: number
   /** Snapshots the server told us we missed. A gap is an event, never an absence. */
@@ -100,12 +93,48 @@ let state: LiveState = {
   broker: null,
   bounds: {},
   advancedAt: {},
-  advances: 0,
-  connections: 0,
+  resyncs: 0,
   reconnects: 0,
   missed: 0,
   venues: new Map(),
   tick: 0,
+}
+
+/** What just happened to the stream, or to the record behind it. */
+export type StreamEvent = 'connected' | 'disconnected' | 'advanced'
+
+/**
+ * Does this mean what the screen holds may no longer be true?
+ *
+ * **Extracted so a test can reach it**, which is the shape this tree already
+ * uses on the other side — `moves`, `union_micros`, `event_for` and `describe`
+ * were each pulled out of the loop or handler that called them, for the stated
+ * reason that *a branch that is only ever reasoned about is a branch that is
+ * not held*. The same argument, in the other language: this needs no React, no
+ * document and no `renderHook` to exercise three comparisons.
+ *
+ * The hook that used to decide this inline shipped three defects in two days,
+ * each found by hand in a browser. The answers below are what those cost.
+ */
+export function isAReasonToResync(event: StreamEvent, connectionsBefore: number): boolean {
+  switch (event) {
+    // The record moved. The plainest reason there is.
+    case 'advanced':
+      return true
+
+    // **A re-connection, yes — a first connection, no.** The first is the page
+    // load, whose reads have just been done; refetching would undo them.
+    case 'connected':
+      return connectionsBefore > 0
+
+    // **A disconnection, no — and this is the one that looks like a reason.**
+    // The stream broke, so surely something changed? But the tower is usually
+    // down at that moment: refetching fails, and with retries off the failure
+    // is held. Measured at nine refusals across the screen. The reason to
+    // refetch is the connection coming BACK.
+    case 'disconnected':
+      return false
+  }
 }
 
 const listeners = new Set<() => void>()
@@ -114,6 +143,11 @@ function set(next: Partial<LiveState>) {
   state = { ...state, ...next }
   for (const l of listeners) l()
 }
+
+// How many times the stream has been established. Not in `LiveState`: nothing
+// renders it, and the only question anyone asks of it is whether the next
+// connection is the first — which `isAReasonToResync` answers.
+let opened = 0
 
 let source: EventSource | null = null
 let ticker: ReturnType<typeof setInterval> | null = null
@@ -127,7 +161,9 @@ function open() {
     // connection being established is the moment a refetch can succeed — the
     // disconnection is not, which is what `reconnects` records for the Live
     // panel to report.
-    set({ connected: true, connections: state.connections + 1 })
+    const again = isAReasonToResync('connected', opened)
+    opened += 1
+    set({ connected: true, resyncs: state.resyncs + (again ? 1 : 0) })
   })
 
   // **The answer to every gap.** The tower sends this on connect and again
@@ -164,7 +200,7 @@ function open() {
     set({
       bounds: { ...state.bounds, [moved.kind]: moved.bound },
       advancedAt: { ...state.advancedAt, [moved.kind]: Date.now() },
-      advances: state.advances + 1,
+      resyncs: state.resyncs + (isAReasonToResync('advanced', opened) ? 1 : 0),
       connected: true,
     })
   })
@@ -404,7 +440,7 @@ export function useFollowTheRecord(): void {
     // earlier draft keyed on `reconnects` and so refetched everything the
     // moment the stream dropped — while the tower was still down. With
     // retries off, all nine panels held that refusal permanently.
-    if (live.advances === 0 && live.connections <= 1) return
+    if (live.resyncs === 0) return
     client.invalidateQueries()
     // **`connections`, matching the guard above.** An earlier draft guarded on
     // `connections` and depended on `reconnects`: the effect re-ran on the
@@ -412,6 +448,6 @@ export function useFollowTheRecord(): void {
     // reopen — so nothing refetched and the screen kept its pre-outage
     // figures. A guard and a dependency that name different things is a guard
     // that does not run.
-  }, [live.advances, live.connections, client])
+  }, [live.resyncs, client])
 }
 

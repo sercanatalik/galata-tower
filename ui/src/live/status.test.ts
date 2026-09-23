@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { heardAgo, silenceReason, sinceArrival, venueLag, whySilent } from './status'
+import { heardAgo, isAReasonToResync, silenceReason, sinceArrival, venueLag, whySilent } from './status'
 import type { LiveState } from './status'
 
 /** A LiveState with only what a test cares about set. */
@@ -11,8 +11,7 @@ function state(over: Partial<LiveState>): LiveState {
     broker: null,
     bounds: {},
     advancedAt: {},
-    advances: 0,
-    connections: 1,
+    resyncs: 0,
     reconnects: 0,
     missed: 0,
     venues: new Map(),
@@ -121,5 +120,47 @@ describe('why the screen is silent', () => {
       whySilent(state({ broker: { connected: true, attempts: 0, refusal: null } })),
     ].map(silenceReason)
     expect(new Set(said).size).toBe(said.length)
+  })
+})
+
+/**
+ * What counts as a reason to distrust what the screen holds.
+ *
+ * **Three defects in two days lived in this decision**, each found by hand in
+ * a browser: a predicate that matched only the tape routes, a signal taken
+ * from the disconnection instead of the connection, and a guard reading one
+ * value while the effect watched another. The answers below are what those
+ * cost, kept as cases.
+ */
+describe('a reason to resync', () => {
+  it('counts the record advancing', () => {
+    expect(isAReasonToResync('advanced', 1)).toBe(true)
+    // However many connections have happened — an advance stands alone.
+    expect(isAReasonToResync('advanced', 0)).toBe(true)
+  })
+
+  it('counts a re-connection, because of what may have happened while away', () => {
+    expect(isAReasonToResync('connected', 1)).toBe(true)
+    expect(isAReasonToResync('connected', 7)).toBe(true)
+  })
+
+  it('does NOT count the first connection', () => {
+    // The page has just read everything; refetching would undo that read.
+    expect(isAReasonToResync('connected', 0)).toBe(false)
+  })
+
+  it('does NOT count a disconnection — the case that cost nine refusals', () => {
+    // **The one that looks most like a reason.** The stream broke, so surely
+    // something changed? But the tower is usually down at that moment, so the
+    // refetch fails, and with retries off the failure is held. Every panel on
+    // the screen showed a refusal until the page was reloaded.
+    expect(isAReasonToResync('disconnected', 0)).toBe(false)
+    expect(isAReasonToResync('disconnected', 5)).toBe(false)
+  })
+
+  it('is decided by the event, not by a count alone', () => {
+    // Same count, opposite answers: the event is what carries the meaning.
+    expect(isAReasonToResync('connected', 3)).toBe(true)
+    expect(isAReasonToResync('disconnected', 3)).toBe(false)
   })
 })
