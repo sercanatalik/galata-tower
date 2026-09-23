@@ -212,6 +212,20 @@ struct About {
     tape: Root,
     /// The tape columns a reader can prune on, from the schema itself.
     prune_on: Vec<String>,
+    /// What is wrong with the tape's layout, in `galata-datawatch`'s own words.
+    ///
+    /// **Empty is the normal case and the interesting one is not.** A tape
+    /// holding two segments whose sequence ranges overlap serves the overlap
+    /// TWICE, and every figure derived from it is inflated. Measured on the
+    /// real tape on 2026-09-23: this tower reported 108,098 rows where the
+    /// rebuild had written 107,312 — two stale segments, superseded by a later
+    /// rebuild that wrote wider ranges and left the narrow ones behind, which
+    /// is exactly what `galata-tape-rebuild --help` warns about.
+    ///
+    /// `galata-tape-rebuild` has printed this on every run since it was
+    /// written. This tower links the same crate, serves the same tape, and
+    /// never asked.
+    tape_problems: Vec<String>,
 }
 
 /// One directory this tower reads.
@@ -386,6 +400,14 @@ async fn about(State(tower): State<Tower>) -> Json<About> {
         prune_on: galata_datawatch::tape::schema::PRUNE_ON
             .iter()
             .map(|column| (*column).to_owned())
+            .collect(),
+        // **Checked on request rather than cached.** It lists directories and
+        // parses names; it opens no parquet. `/v1/about` is fetched once per
+        // page and again whenever the record advances, which is exactly when a
+        // rebuild could have created or cleared this.
+        tape_problems: galata_datawatch::tape::check_layout(&tower.tape)
+            .iter()
+            .map(|problem| problem.to_string())
             .collect(),
     })
 }

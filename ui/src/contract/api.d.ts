@@ -266,6 +266,22 @@ export interface components {
              *     what this process was doing.
              */
             tape: components["schemas"]["Root"];
+            /**
+             * @description What is wrong with the tape's layout, in `galata-datawatch`'s own words.
+             *
+             *     **Empty is the normal case and the interesting one is not.** A tape
+             *     holding two segments whose sequence ranges overlap serves the overlap
+             *     TWICE, and every figure derived from it is inflated. Measured on the
+             *     real tape on 2026-09-23: this tower reported 108,098 rows where the
+             *     rebuild had written 107,312 — two stale segments, superseded by a later
+             *     rebuild that wrote wider ranges and left the narrow ones behind, which
+             *     is exactly what `galata-tape-rebuild --help` warns about.
+             *
+             *     `galata-tape-rebuild` has printed this on every run since it was
+             *     written. This tower links the same crate, serves the same tape, and
+             *     never asked.
+             */
+            tape_problems: string[];
         };
         /**
          * @description What a browser is handed on connect, and after a gap.

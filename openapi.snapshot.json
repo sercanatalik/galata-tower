@@ -366,7 +366,8 @@
         "required": [
           "archive",
           "tape",
-          "prune_on"
+          "prune_on",
+          "tape_problems"
         ],
         "properties": {
           "archive": {
@@ -383,6 +384,13 @@
           "tape": {
             "$ref": "#/components/schemas/Root",
             "description": "The tape root the windowed reads come from.\n\n**Reported for the first time on 2026-09-23.** Five routes read it and\nnothing showed it, so a surface named `about` did not describe half of\nwhat this process was doing."
+          },
+          "tape_problems": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What is wrong with the tape's layout, in `galata-datawatch`'s own words.\n\n**Empty is the normal case and the interesting one is not.** A tape\nholding two segments whose sequence ranges overlap serves the overlap\nTWICE, and every figure derived from it is inflated. Measured on the\nreal tape on 2026-09-23: this tower reported 108,098 rows where the\nrebuild had written 107,312 — two stale segments, superseded by a later\nrebuild that wrote wider ranges and left the narrow ones behind, which\nis exactly what `galata-tape-rebuild --help` warns about.\n\n`galata-tape-rebuild` has printed this on every run since it was\nwritten. This tower links the same crate, serves the same tape, and\nnever asked."
           }
         }
       },

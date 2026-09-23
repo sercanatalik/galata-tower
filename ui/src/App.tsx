@@ -77,6 +77,33 @@ function Header() {
           </p>
         </div>
       ) : null}
+      {/* **The tape can be wrong in a way that inflates every figure below.**
+          Two segments whose sequence ranges overlap serve the overlap twice.
+          Measured on the real tape, 2026-09-23: this tower reported 108,098
+          rows where the rebuild had written 107,312, and said nothing —
+          `galata-tape-rebuild` had been printing the same problem on every
+          run since it was written, and the tower linked the same crate and
+          never asked.
+
+          Beside the missing-root warning because it is the same kind of fact:
+          the numbers below are not what they appear. Reported, never repaired
+          — the tape is `galata-tape-rebuild`'s to write, and a reader that
+          deleted segments would be a second writer. */}
+      {data && data.tape_problems.length > 0 ? (
+        <div className="refusal">
+          <strong>
+            The tape is malformed, so the counts below are too high.
+          </strong>
+          {data.tape_problems.map((problem) => (
+            <p key={problem}>{problem}</p>
+          ))}
+          <p className="muted">
+            Rows in an overlapping range are read twice. <code>galata-tape-rebuild --replace</code>{' '}
+            rewrites the affected partitions; nothing here will, because the tape is written by
+            that and read by this.
+          </p>
+        </div>
+      ) : null}
       <p className="muted">
         prunes on {data?.prune_on.map((c) => <code key={c}>{c}</code>) ?? null}
       </p>
