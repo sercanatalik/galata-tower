@@ -61,14 +61,22 @@ PLANTPY
     check|write)
         cd "$ROOT"
         cargo build --quiet -p galata-tower
+        # **Where cargo actually put it**, not `./target`. This said
+        # `./target/debug/galata-tower`, which is right only when nobody has
+        # set `CARGO_TARGET_DIR` — a common setting for a shared build cache,
+        # and one the guard harness now uses so that eighteen copies of this
+        # tree do not each compile 245 crates. With it set, the guard failed
+        # with "No such file or directory" and the harness correctly reported
+        # it as a guard that cannot be said to catch anything.
+        BIN="${CARGO_TARGET_DIR:-$ROOT/target}/debug/galata-tower"
         FRESH="$(mktemp)"; trap 'rm -f "$FRESH"' EXIT
-        ./target/debug/galata-tower --dump-openapi >"$FRESH"
+        "$BIN" --dump-openapi >"$FRESH"
 
         # The determinism the byte comparison rests on, checked rather than
         # assumed: a flaky generator would make this guard fail at random and
         # teach people to ignore it.
         SECOND="$(mktemp)"
-        ./target/debug/galata-tower --dump-openapi >"$SECOND"
+        "$BIN" --dump-openapi >"$SECOND"
         if ! cmp -s "$FRESH" "$SECOND"; then
             rm -f "$SECOND"
             echo "check-contract-drift: the generator is not deterministic; two runs differ." >&2

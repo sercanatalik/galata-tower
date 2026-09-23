@@ -86,6 +86,29 @@ safe_to_plant() {
 
 guards=0
 planted_count=0
+# **One build directory for every copy.**
+#
+# This harness copies the tree for each guard's clean check and again for each
+# plant — eighteen copies here. Each copy is a new path, so each used to get
+# its own `target/` and compile 245 crates from nothing. Measured, with the
+# copy split out: 59s across eight clean checks and 42s across ten plants, of
+# which the copying itself was **6s**. The cost was never the copying.
+#
+# Cargo reuses across paths when the target directory is shared — measured,
+# because the opposite is easy to assume and the previous change's design
+# assumed it:
+#
+#   copy A, cold                                  11s
+#   copy B, different path, same target dir        0s
+#
+# A dependency's fingerprint is keyed on the package and its inputs, not on
+# which workspace asked for it.
+#
+# **This requires the harness to stay serial.** Cargo locks a target directory,
+# so copies sharing one must not run at the same time. Nothing here runs them
+# concurrently; whoever adds a `&` needs to give each its own directory again.
+export CARGO_TARGET_DIR="$ROOT/target/guard-harness"
+
 for guard in "$ROOT"/scripts/check-*.sh; do
     [[ -e "$guard" ]] || continue
     name="$(basename "$guard" .sh)"
