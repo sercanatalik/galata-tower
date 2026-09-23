@@ -109,12 +109,18 @@ for guard in "$ROOT"/scripts/check-*.sh; do
     for plant in $plants; do
         label="$name"
         [[ "$plant" == default ]] || label="$name ($plant)"
+        plant_began=$SECONDS
         planted="$(copy_tree "$SCRATCH/$name-planted-$plant")"
         if ! safe_to_plant "$planted"; then
             failures+=("$label: refused to plant into $planted")
             continue
         fi
         planted_count=$((planted_count + 1))
+        # **What this plant cost, split.** The gate's timing named this harness
+        # as its largest part; the next question is whether that is the tree
+        # copy above or the guard runs below, and it is cheaper to print the
+        # answer than to instrument this by hand again.
+        copied=$(( SECONDS - plant_began ))
         GALATA_GUARD_PLANT="$plant" "$guard" plant "$planted" >/dev/null 2>&1
         if out=$("$guard" check "$planted" 2>&1); then
             failures+=("$label: PASSES with its own violation planted; it cannot fail")
@@ -126,6 +132,7 @@ for guard in "$ROOT"/scripts/check-*.sh; do
                     || failures+=("$label: its planted failure does not name \"$needle\"")
             done <<<"$expected"
         fi
+        printf '  %s: %ss (%ss copying the tree)\n' "$label" "$(( SECONDS - plant_began ))" "$copied"
     done
 done
 
