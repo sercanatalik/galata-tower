@@ -12,6 +12,7 @@ function state(over: Partial<LiveState>): LiveState {
     bounds: {},
     advancedAt: {},
     advances: 0,
+    connections: 1,
     reconnects: 0,
     missed: 0,
     venues: new Map(),

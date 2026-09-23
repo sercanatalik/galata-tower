@@ -74,6 +74,17 @@ export interface LiveState {
    * status stream already follows: a gap is an event, never an absence.
    */
   advances: number
+  /**
+   * How many times the stream has been ESTABLISHED, including the first.
+   *
+   * **Distinct from `reconnects`, and the difference is load-bearing.**
+   * `reconnects` counts disconnections, which is what the Live panel reports.
+   * This counts connections, which is when a refetch can actually succeed —
+   * keying the refetch on the disconnection instead fired every query while
+   * the tower was down, and with retries off they stayed refused for ever.
+   * Measured: nine refusals across the screen.
+   */
+  connections: number
   /** Reconnects since load. A count, not a verdict. */
   reconnects: number
   /** Snapshots the server told us we missed. A gap is an event, never an absence. */
@@ -90,6 +101,7 @@ let state: LiveState = {
   bounds: {},
   advancedAt: {},
   advances: 0,
+  connections: 0,
   reconnects: 0,
   missed: 0,
   venues: new Map(),
@@ -111,9 +123,11 @@ function open() {
   source = new EventSource('/v1/status')
 
   source.addEventListener('open', () => {
-    // Not the first open: EventSource reconnects on its own, and each one
-    // after the first is worth counting.
-    set({ connected: true, reconnects: state.connected ? state.reconnects : state.reconnects })
+    // **Counted on the way UP.** `EventSource` reconnects on its own, and a
+    // connection being established is the moment a refetch can succeed — the
+    // disconnection is not, which is what `reconnects` records for the Live
+    // panel to report.
+    set({ connected: true, connections: state.connections + 1 })
   })
 
   // **The answer to every gap.** The tower sends this on connect and again
@@ -366,12 +380,38 @@ export function useFollowTheRecord(): void {
   const live = useLiveStatus()
   const client = useQueryClient()
 
+  // **A re-connection is a reason too, on the same footing as an advance.** Both
+  // say *what you hold may no longer be true*: an advance because the record
+  // moved, a reconnect because there was a period in which it could have moved
+  // unobserved and the browser cannot tell which.
+  //
+  // This is the argument the tower already makes for the venue board, one
+  // level out — *"Connect, lag, reconnect — all three are the same question,
+  // what is true now"* — applied to the venues and not to the record. Measured
+  // before it was: with the tower restarted and the record changed while it
+  // was down, the screen reconnected and went on reporting 36 instruments
+  // against a record holding 24.
+  //
+  // The tower cannot do this for us: a reconnecting browser and a new one are
+  // indistinguishable to it, and the browser is the one holding the stale
+  // figures.
   useEffect(() => {
-    // Zero is the opening state: a board frame is where the record STANDS, not
-    // an advance, and refetching everything on connect would undo the read the
-    // page has just done.
-    if (live.advances === 0) return
+    // Nothing has happened yet: a board frame is where the record STANDS
+    // rather than an advance, and the FIRST connection is the page load, whose
+    // reads have just been done.
+    //
+    // It is the connection that triggers this, never the disconnection. An
+    // earlier draft keyed on `reconnects` and so refetched everything the
+    // moment the stream dropped — while the tower was still down. With
+    // retries off, all nine panels held that refusal permanently.
+    if (live.advances === 0 && live.connections <= 1) return
     client.invalidateQueries()
-  }, [live.advances, client])
+    // **`connections`, matching the guard above.** An earlier draft guarded on
+    // `connections` and depended on `reconnects`: the effect re-ran on the
+    // DROP, where the guard correctly returned early, and never again on the
+    // reopen — so nothing refetched and the screen kept its pre-outage
+    // figures. A guard and a dependency that name different things is a guard
+    // that does not run.
+  }, [live.advances, live.connections, client])
 }
 
