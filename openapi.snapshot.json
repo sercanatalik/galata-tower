@@ -859,7 +859,7 @@
       },
       "Root": {
         "type": "object",
-        "description": "One directory this tower reads.\n\n**Configured and observed, separately.** A path and an empty listing\ntogether look fine, because an empty listing is consistent with both a\nclean record and a typo: pointed at a directory that does not exist, every\nsurface here answers `[]` and none of them says *there is no here*. That is\nthe failure `overdue_closed` was written to catch — *\"the wrong var\ndirectory\"* — and the screen built on it could not see it.",
+        "description": "One directory this tower reads.\n\n**Configured and observed, separately.** A path and an empty listing\ntogether look fine, because an empty listing is consistent with both a\nclean record and a typo: pointed at a directory that does not exist, every\nsurface here answers `[]` and none of them says *there is no here*. That is\nthe failure `overdue_closed` was written to catch — *\"the wrong var\ndirectory\"* — and the screen built on it could not see it.\n\nVerified on screen with the tape root removed: the header reads *\"A root\nis not there. /tmp/nope-tape cannot be listed — set GALATA_TAPE\"*, while\nPartitions and Overdue still answer from the readable archive. The commit\nthat introduced this said the screen check had not run, because the browser\nwas unavailable at the time; it has since.",
         "required": [
           "path",
           "var",
@@ -928,6 +928,7 @@
         "required": [
           "kind",
           "bound",
+          "written",
           "total",
           "rows"
         ],
@@ -952,6 +953,10 @@
             "type": "integer",
             "description": "How many rows the window holds, before any cap.\n\n**Always present, not only when a cap applied.** A field that appears\nconditionally is one callers learn to ignore, and this is the only thing\ndistinguishing a capped read from a quiet window.",
             "minimum": 0
+          },
+          "written": {
+            "type": "boolean",
+            "description": "Whether the tape has ever written this dataset.\n\n**Never written is not the same as this window is empty**, and the\nstore keeps them apart deliberately — `tape::reader::unwritten` exists\nso a caller can tell *nothing has happened yet* from *this scope is\nmissing while the others are live*. Until 2026-09-23 that difference\narrived as a `400`, which says *the request was malformed*; the request\nis fine and the tape is simply empty. The screen never rendered that\nerror and sat on \"reading the tape…\" indefinitely against a route\nanswering in half a millisecond.\n\n`bound` is zero when this is false. Zero alone would read as *durable\nto the beginning of time*; the pair is what a reader needs."
           }
         }
       }

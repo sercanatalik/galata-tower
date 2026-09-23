@@ -130,7 +130,17 @@ export default function Tape() {
           : `advanced ${advanced}s ago`}
       </p>
       {isPending ? <p className="muted">reading the tape…</p> : null}
-      {data && data.rows.length === 0 ? (
+      {/* **The case that used to hang.** An unwritten dataset arrived as a
+          400, which the panel never rendered, so it sat on "reading the
+          tape…" indefinitely. It is an answer now, and this says it. */}
+      {data && !data.written ? (
+        <p className="muted">
+          The tape has never written <code>quotes</code>. That is not an empty window — nothing
+          has been projected here yet. <code>galata-tape-rebuild</code> writes it from the
+          archive, and an unreadable tape root looks the same, which the header above says.
+        </p>
+      ) : null}
+      {data && data.written && data.rows.length === 0 ? (
         <p className="muted">Nothing in that window.</p>
       ) : null}
       <table className="tape">

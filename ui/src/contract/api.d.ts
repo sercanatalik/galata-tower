@@ -607,6 +607,12 @@ export interface components {
          *     surface here answers `[]` and none of them says *there is no here*. That is
          *     the failure `overdue_closed` was written to catch — *"the wrong var
          *     directory"* — and the screen built on it could not see it.
+         *
+         *     Verified on screen with the tape root removed: the header reads *"A root
+         *     is not there. /tmp/nope-tape cannot be listed — set GALATA_TAPE"*, while
+         *     Partitions and Overdue still answer from the readable archive. The commit
+         *     that introduced this said the screen check had not run, because the browser
+         *     was unavailable at the time; it has since.
          */
         Root: {
             /** @description The path the tower was given. */
@@ -683,6 +689,22 @@ export interface components {
              *     distinguishing a capped read from a quiet window.
              */
             total: number;
+            /**
+             * @description Whether the tape has ever written this dataset.
+             *
+             *     **Never written is not the same as this window is empty**, and the
+             *     store keeps them apart deliberately — `tape::reader::unwritten` exists
+             *     so a caller can tell *nothing has happened yet* from *this scope is
+             *     missing while the others are live*. Until 2026-09-23 that difference
+             *     arrived as a `400`, which says *the request was malformed*; the request
+             *     is fine and the tape is simply empty. The screen never rendered that
+             *     error and sat on "reading the tape…" indefinitely against a route
+             *     answering in half a millisecond.
+             *
+             *     `bound` is zero when this is false. Zero alone would read as *durable
+             *     to the beginning of time*; the pair is what a reader needs.
+             */
+            written: boolean;
         };
     };
     responses: never;

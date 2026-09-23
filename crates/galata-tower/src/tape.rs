@@ -91,18 +91,6 @@ pub enum TapeError {
         /// What the reader said.
         detail: String,
     },
-    /// The dataset exists and has written nothing yet.
-    ///
-    /// **Distinct from unreadable, because the store distinguishes them.**
-    /// `tape::reader::unwritten` exists so a caller can tell *nothing has
-    /// happened yet* from *this scope is missing while the others are live*,
-    /// and flattening the two would throw away the difference the store went
-    /// to trouble to keep.
-    #[error("the tape holds no {kind} yet")]
-    NothingWritten {
-        /// Which dataset.
-        kind: String,
-    },
     /// A column type this tower cannot render.
     ///
     /// **Loudly, rather than wrongly.** A type rendered by guesswork is how a
@@ -310,6 +298,20 @@ pub struct View {
     /// **Returned with the rows on purpose.** Forty rows from a quiet hour and
     /// forty rows from a store that stopped there look identical without it.
     pub bound: i64,
+    /// Whether the tape has ever written this dataset.
+    ///
+    /// **Never written is not the same as this window is empty**, and the
+    /// store keeps them apart deliberately — `tape::reader::unwritten` exists
+    /// so a caller can tell *nothing has happened yet* from *this scope is
+    /// missing while the others are live*. Until 2026-09-23 that difference
+    /// arrived as a `400`, which says *the request was malformed*; the request
+    /// is fine and the tape is simply empty. The screen never rendered that
+    /// error and sat on "reading the tape…" indefinitely against a route
+    /// answering in half a millisecond.
+    ///
+    /// `bound` is zero when this is false. Zero alone would read as *durable
+    /// to the beginning of time*; the pair is what a reader needs.
+    pub written: bool,
     /// How many rows the window holds, before any cap.
     ///
     /// **Always present, not only when a cap applied.** A field that appears
@@ -453,9 +455,17 @@ pub fn view(
     // Asked before opening, because `Bound::of` refuses either way and this is
     // the only place the two can be told apart. A dataset that has written
     // nothing is not an unreadable store.
+    // **An answer, not a refusal.** The same condition `bounds` skips and
+    // `coverage` reports as an empty summary — and which `/v1/gaps` calls the
+    // good answer. Treating it as an error in one surface of four is what left
+    // the screen unable to render its own case.
     if !galata_datawatch::tape::reader::unwritten(root, &scopes).is_empty() {
-        return Err(TapeError::NothingWritten {
+        return Ok(View {
             kind: kind.as_str().to_owned(),
+            bound: 0,
+            written: false,
+            total: 0,
+            rows: Vec::new(),
         });
     }
 
@@ -484,6 +494,7 @@ pub fn view(
     Ok(View {
         kind: kind.as_str().to_owned(),
         bound: reader.bound().position,
+        written: true,
         total,
         rows: newest(&batches, limit)?,
     })
@@ -922,6 +933,55 @@ mod tests {
     #[test]
     fn the_default_hour_cap_is_stated() {
         assert_eq!(DEFAULT_HOURS, 200);
+    }
+
+    /// **The case that hung the screen.** An unwritten dataset used to answer
+    /// `400`, which the panel never rendered — minutes of "reading the tape…"
+    /// against a route answering in half a millisecond.
+    #[test]
+    fn an_unwritten_dataset_answers_rather_than_refusing() {
+        let nowhere = Path::new("/galata-tower-no-such-tape-root");
+        let view = view(nowhere, Kind::Quotes, 0, i64::MAX, 40, None)
+            .expect("an unwritten dataset is an answer, not a refusal");
+        assert!(!view.written, "and it says it has never been written");
+        assert_eq!(view.total, 0);
+        assert!(view.rows.is_empty());
+        assert_eq!(
+            view.bound, 0,
+            "no durable frontier, reported beside `written`"
+        );
+    }
+
+    /// A written dataset is distinguishable from one that never was, which is
+    /// the difference the store keeps and the status code was carrying.
+    #[test]
+    fn a_written_dataset_says_so() {
+        let Some(root) = tape_root() else {
+            eprintln!("SKIPPED: no tape");
+            return;
+        };
+        let view = view(&root, Kind::Quotes, 0, i64::MAX / 2, 1, None).expect("the tape reads");
+        assert!(view.written);
+        assert!(view.bound > 0, "and carries a real frontier");
+    }
+
+    /// The malformed requests still refuse. A window that runs backwards and a
+    /// limit of zero are bad REQUESTS; an empty tape is not.
+    #[test]
+    fn the_malformed_requests_still_refuse() {
+        let nowhere = Path::new("/galata-tower-no-such-tape-root");
+        assert!(matches!(
+            view(nowhere, Kind::Quotes, 100, 50, 40, None),
+            Err(TapeError::Backwards { .. })
+        ));
+        assert!(matches!(
+            view(nowhere, Kind::Quotes, 0, 100, 0, None),
+            Err(TapeError::NoRows)
+        ));
+        assert!(
+            kind_of("nonsense").is_err(),
+            "and a dataset the tape does not hold"
+        );
     }
 
     /// A window that runs backwards is refused here as `view` refuses it.
