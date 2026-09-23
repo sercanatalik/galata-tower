@@ -203,9 +203,53 @@ struct Overdue {
 #[derive(Serialize, ToSchema)]
 struct About {
     /// The archive root being watched.
-    archive: String,
+    archive: Root,
+    /// The tape root the windowed reads come from.
+    ///
+    /// **Reported for the first time on 2026-09-23.** Five routes read it and
+    /// nothing showed it, so a surface named `about` did not describe half of
+    /// what this process was doing.
+    tape: Root,
     /// The tape columns a reader can prune on, from the schema itself.
     prune_on: Vec<String>,
+}
+
+/// One directory this tower reads.
+///
+/// **Configured and observed, separately.** A path and an empty listing
+/// together look fine, because an empty listing is consistent with both a
+/// clean record and a typo: pointed at a directory that does not exist, every
+/// surface here answers `[]` and none of them says *there is no here*. That is
+/// the failure `overdue_closed` was written to catch — *"the wrong var
+/// directory"* — and the screen built on it could not see it.
+#[derive(Serialize, ToSchema)]
+struct Root {
+    /// The path the tower was given.
+    path: String,
+    /// The environment variable that gave it.
+    ///
+    /// **Named because that is what gets fixed.** *"/tmp/nope is not there"*
+    /// still leaves an operator working out which of two variables set it.
+    /// This tree names the thing to change everywhere it matters — a broker
+    /// refusal carries `GALATA_BROKER_PASSWORD_READER` rather than "a
+    /// password".
+    var: String,
+    /// Whether it is there and can be listed.
+    ///
+    /// **Listed, not merely present.** A directory that exists and cannot be
+    /// read is a different failure with the same symptom, and every route here
+    /// finds out by listing it anyway.
+    readable: bool,
+}
+
+impl Root {
+    fn of(path: &std::path::Path, var: &str) -> Root {
+        Root {
+            path: path.display().to_string(),
+            var: var.to_owned(),
+            readable: std::fs::read_dir(path).is_ok(),
+        }
+    }
 }
 
 /// The partitions the record holds.
@@ -331,7 +375,8 @@ fn today_utc() -> String {
 )]
 async fn about(State(tower): State<Tower>) -> Json<About> {
     Json(About {
-        archive: tower.archive.display().to_string(),
+        archive: Root::of(&tower.archive, "GALATA_ARCHIVE"),
+        tape: Root::of(&tower.tape, "GALATA_TAPE"),
         prune_on: galata_datawatch::tape::schema::PRUNE_ON
             .iter()
             .map(|column| (*column).to_owned())
@@ -1004,7 +1049,7 @@ async fn rates(State(tower): State<Tower>, Query(query): Query<RatesQuery>) -> R
         title = "galata-tower",
         description = "A read API over the galata-datawatch record. It watches the record, not the worker.",
     ),
-    components(schemas(About, Partition, Overdue, Board, BrokerState, TapeMoved))
+    components(schemas(About, Root, Partition, Overdue, Board, BrokerState, TapeMoved))
 )]
 struct Contract;
 
@@ -1548,6 +1593,56 @@ mod tests {
             "a root that is not there is silence, not a refusal"
         );
         assert_eq!(found.bound, 0);
+    }
+
+    /// **The case that started this.** A tower pointed at a directory that
+    /// does not exist answered every surface with a plausible empty result —
+    /// no partitions, no instruments, no coverage, no gaps — and none of them
+    /// said *there is no here*. An operator with one typo got a calm, entirely
+    /// empty dashboard.
+    #[test]
+    fn a_root_that_is_not_there_says_so() {
+        let root = Root::of(
+            std::path::Path::new("/galata-tower-no-such-root-at-all"),
+            "GALATA_ARCHIVE",
+        );
+        assert!(!root.readable, "an absent directory is not readable");
+        assert_eq!(root.var, "GALATA_ARCHIVE", "and the thing to fix is named");
+        assert!(root.path.contains("no-such-root"), "as is the path given");
+    }
+
+    /// A root that is there and empty is readable — so its empty listings are
+    /// a statement about the record rather than about the configuration.
+    #[test]
+    fn a_root_that_is_there_and_empty_is_readable() {
+        let dir = std::env::temp_dir().join(format!("galata-tower-empty-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch root");
+        let root = Root::of(&dir, "GALATA_TAPE");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(root.readable, "empty is not absent");
+    }
+
+    /// **The names must be the ones the binary actually reads.** A variable
+    /// reported here that `main` does not read would send an operator to
+    /// change something with no effect — which is worse than saying nothing,
+    /// because it looks like an answer.
+    #[test]
+    fn the_variables_named_are_the_ones_read() {
+        let source = include_str!("main.rs");
+        for var in ["GALATA_ARCHIVE", "GALATA_TAPE"] {
+            // Once where it is read from the environment, once where it is
+            // reported. Two is the whole point: reported and never read is the
+            // failure this holds against.
+            let reads = source.matches(&format!("std::env::var(\"{var}\")")).count();
+            assert_eq!(
+                reads, 1,
+                "{var} must be read from the environment exactly once"
+            );
+            assert!(
+                source.contains(&format!("\"{var}\")")),
+                "{var} must be reported by Root::of"
+            );
+        }
     }
 
     /// `say` writes both: the stored state for whoever connects next, and the

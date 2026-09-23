@@ -34,13 +34,43 @@ function Refusal({ what, error }: { what: string; error: unknown }) {
 /** Which archive is being watched, and what a reader may prune on. */
 function Header() {
   const { data, error } = $api.useQuery('get', '/v1/about')
+  // Configured and observed are different facts, and an empty listing is
+  // consistent with both a clean record and a typo.
+  const missing = [data?.archive, data?.tape].filter((r) => r && !r.readable) as Array<{
+    path: string
+    var: string
+  }>
   if (error) return <Refusal what="The archive" error={error} />
   return (
     <header>
       <h1>galata-tower</h1>
       <p className="muted">
-        watching <code>{data?.archive ?? '…'}</code>
+        watching <code>{data?.archive.path ?? '…'}</code>
+        {data ? ' · tape ' : null}
+        {data ? <code>{data.tape.path}</code> : null}
       </p>
+      {/* **Said once, here, where the paths already are.** A tower pointed at
+          a directory that does not exist answered every surface with a
+          plausible empty result and none of them said "there is no here" — an
+          operator with one typo got a calm, entirely empty dashboard. Eight
+          panels each repeating a diagnosis would be eight statements of one
+          fact; this is the one place the paths are printed. */}
+      {missing.length > 0 ? (
+        <div className="refusal">
+          <strong>
+            {missing.length === 1 ? 'A root is not there.' : 'Neither root is there.'}
+          </strong>
+          {missing.map((r) => (
+            <p key={r.var}>
+              <code>{r.path}</code> cannot be listed — set <code>{r.var}</code>
+            </p>
+          ))}
+          <p className="muted">
+            Every panel below will look empty, which is what an absent directory and a clean
+            record have in common.
+          </p>
+        </div>
+      ) : null}
       <p className="muted">
         prunes on {data?.prune_on.map((c) => <code key={c}>{c}</code>) ?? null}
       </p>
