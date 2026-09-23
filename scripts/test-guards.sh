@@ -41,8 +41,22 @@
 set -uo pipefail
 
 ROOT="$(cd "${1:-$(dirname "${BASH_SOURCE[0]}")/..}" && pwd)"
-SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/tower-guards-XXXXXX")"
-trap 'rm -rf "$SCRATCH"' EXIT
+# **A STABLE path, and this is the whole reason the shared build directory
+# works.**
+#
+# This was `mktemp -d .../tower-guards-XXXXXX`, removed on exit. The copies
+# went; the artifacts they compiled did not. Cargo keys a workspace crate's
+# fingerprint on its PATH, so a new scratch directory every run meant a fresh
+# set of artifacts every run, matchable by nothing and cleaned by nobody —
+# 6.2 GB of them, inside the directory `Swatinem/rust-cache` saves in CI.
+#
+# It also explains a number that looked like noise: this harness is 38s warm
+# and 120s with that directory cold, and cold was every run.
+#
+# Under `target/` because it is build output, `cargo clean` reaches it, and
+# every copy already excludes it.
+SCRATCH="$ROOT/target/guard-scratch"
+mkdir -p "$SCRATCH"
 
 failures=()
 
@@ -61,6 +75,13 @@ SIBLING="$(cd "$ROOT/.." && pwd)/galata-datawatch"
 copy_tree() {
     local parent="$1"
     local dest="$parent/galata-tower"
+    # **Wiped, not overwritten.** This extracted a tar over whatever was there,
+    # which was safe only because the parent was new every run. With a stable
+    # path it is not: a file deleted from the repository would survive here and
+    # a guard would be checking a tree that does not exist — and a plant left
+    # by an interrupted run would be read as this run's tree, which is the
+    # class of mistake this harness exists to catch rather than commit.
+    rm -rf "$dest"
     mkdir -p "$dest"
     ln -sfn "$SIBLING" "$parent/galata-datawatch"
     tar -cf - -C "$ROOT" \
