@@ -55,6 +55,14 @@ export function panelState<T>(read: Read<T>, isEmpty: (data: T) => boolean): Pan
   // against a tape holding no candles. That is not a fifth state: the caller
   // knows WHY it asked for nothing and can say so in its own words, which is
   // more use than anything this function could return.
+  //
+  // TanStack documents both halves of this: a disabled query with no cached
+  // data starts at `status: 'pending'` with `fetchStatus: 'idle'`, and
+  // "you likely cannot use the isPending flag to show a loading spinner" —
+  // `isLoading`, which is `isFetching && isPending`, is the flag meant for
+  // that. It is not used here because `isLoading` is false for a disabled
+  // query AND for one that has never been asked, and this function would
+  // still have to call the second of those something.
   if (read.isPending || read.data === undefined) {
     return { kind: 'reading' }
   }
