@@ -1,5 +1,6 @@
 import { $api } from './contract/client'
 import { forHumans } from './Gaps'
+import { panelState } from './panel'
 import { useRecordAdvances } from './live/status'
 
 /** A day as the partitions spell it, from our clock. */
@@ -27,20 +28,22 @@ function day(micros: number): string {
  */
 export default function Coverage() {
   const advanced = useRecordAdvances('quotes')
-  const { data, error, isPending } = $api.useQuery('get', '/v1/coverage')
+  const read = $api.useQuery('get', '/v1/coverage')
+  const state = panelState(read, (d) => d.days.length === 0)
 
-  if (error) {
+  if (state.kind === 'refused') {
     return (
       <section>
         <h2>Coverage</h2>
         <div className="refusal">
           <strong>Coverage could not be read.</strong>
-          <p>{String(error)}</p>
+          <p>{String(state.error)}</p>
         </div>
       </section>
     )
   }
 
+  const data = state.kind === 'reading' ? undefined : state.data
   const days = data?.days ?? []
 
   return (
@@ -55,8 +58,8 @@ export default function Coverage() {
         {' · '}
         {advanced === null ? 'the record has not moved since this page loaded' : `advanced ${advanced}s ago`}
       </p>
-      {isPending ? <p className="muted">reading the record…</p> : null}
-      {data && days.length === 0 ? (
+      {state.kind === 'reading' ? <p className="muted">reading the record…</p> : null}
+      {state.kind === 'empty' ? (
         <p className="muted">The record accounts for no day yet.</p>
       ) : null}
       {days.length > 0 ? (

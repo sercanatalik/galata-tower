@@ -1,4 +1,5 @@
 import { $api } from './contract/client'
+import { panelState } from './panel'
 import { useRecordAdvances } from './live/status'
 
 /** The whole tape; the summary is bounded by the number of causes, not rows. */
@@ -42,22 +43,27 @@ export function forHumans(micros: number): string {
  */
 export default function Gaps() {
   const advanced = useRecordAdvances('gaps')
-  const { data, error, isPending } = $api.useQuery('get', '/v1/gaps', {
+  const read = $api.useQuery('get', '/v1/gaps', {
     params: { query: WHOLE_TAPE },
   })
+  // Which of the four this panel is in, decided in `panel.ts` rather than
+  // here. The branches below are the same four this file already had; what
+  // changed is that their ORDER is no longer restated per panel.
+  const state = panelState(read, (d) => d.causes.length === 0)
 
-  if (error) {
+  if (state.kind === 'refused') {
     return (
       <section>
         <h2>Gaps</h2>
         <div className="refusal">
           <strong>The gaps could not be read.</strong>
-          <p>{String(error)}</p>
+          <p>{String(state.error)}</p>
         </div>
       </section>
     )
   }
 
+  const data = state.kind === 'reading' ? undefined : state.data
   const causes = data?.causes ?? []
 
   return (
@@ -72,8 +78,8 @@ export default function Gaps() {
           ? 'the record has not moved since this page loaded'
           : `advanced ${advanced}s ago`}
       </p>
-      {isPending ? <p className="muted">reading the gaps…</p> : null}
-      {data && causes.length === 0 ? (
+      {state.kind === 'reading' ? <p className="muted">reading the gaps…</p> : null}
+      {state.kind === 'empty' ? (
         <p className="muted">Nothing is recorded missing in this window.</p>
       ) : null}
       <table className="tape">

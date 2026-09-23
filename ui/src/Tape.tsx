@@ -1,6 +1,7 @@
 import { useState } from 'react'
 
 import { $api } from './contract/client'
+import { panelState } from './panel'
 import { useRecordAdvances } from './live/status'
 import { dec, fmt } from './contract/money'
 
@@ -50,7 +51,7 @@ export default function Tape() {
   // looked at from here at all. `null` is every, which is what a table of the
   // newest rows wants by default.
   const [ticker, setTicker] = useState<string | null>(null)
-  const { data, error, isPending } = $api.useQuery('get', '/v1/tape/{kind}', {
+  const read = $api.useQuery('get', '/v1/tape/{kind}', {
     // Ask for what is drawn. The route caps anyway; asking is what stops
     // eleven megabytes crossing to render forty rows.
     params: {
@@ -61,14 +62,25 @@ export default function Tape() {
       query: { ...WHOLE_TAPE, limit: COUNTS[count], ...(ticker ? { ticker } : {}) },
     },
   })
+  // **`never-written` is not a fifth state.** An unwritten dataset has no rows,
+  // so it is `empty`; which KIND of empty is a fact about the data this panel
+  // successfully read, and is chosen inside that branch rather than beside it.
+  const state = panelState(read, (d) => d.rows.length === 0)
+  // **Above the refusal, because hooks are counted.** This sat BELOW the early
+  // return until 2026-09-23: a render that refused called one hook and a
+  // render that succeeded called two, which React ends the tree over — the
+  // refusal branch this panel has always had could not draw itself. Nothing
+  // found it because the refusal had only ever been reached by planting one,
+  // and the plant was always on the first render.
+  const { data: held } = $api.useQuery('get', '/v1/instruments')
 
-  if (error) {
+  if (state.kind === 'refused') {
     return (
       <section>
         <h2>Tape</h2>
         <div className="refusal">
           <strong>The tape could not be read.</strong>
-          <p>{String(error)}</p>
+          <p>{String(state.error)}</p>
           <p className="muted">
             A tape is built from the archive by <code>galata-tape-rebuild</code>; a tower pointed at
             a root that has none says so rather than showing an empty table.
@@ -81,14 +93,14 @@ export default function Tape() {
   // Newest first, and bounded for the eye: the window bounds the read, this
   // bounds the render.
   // The route returns the newest already; this only reverses them for the eye.
+  const data = state.kind === 'reading' ? undefined : state.data
   const rows = [...(data?.rows ?? [])].reverse()
   // **From the record, so nothing has to be remembered.** This derived the
   // list from the returned rows, which offered one instrument — the newest
   // forty quotes are all the busiest ticker — and then from the route's own
   // `tickers`, which collapses to one entry the moment a ticker is chosen. A
   // list taken from the record does neither, because it never depended on the
-  // read it narrows.
-  const { data: held } = $api.useQuery('get', '/v1/instruments')
+  // read it narrows. The query itself is above, with the other one.
   const tickers = [
     ...new Set(
       (held?.instruments ?? []).filter((i) => i.kind === 'quotes').map((i) => i.ticker),
@@ -129,18 +141,18 @@ export default function Tape() {
           ? 'the record has not moved since this page loaded'
           : `advanced ${advanced}s ago`}
       </p>
-      {isPending ? <p className="muted">reading the tape…</p> : null}
+      {state.kind === 'reading' ? <p className="muted">reading the tape…</p> : null}
       {/* **The case that used to hang.** An unwritten dataset arrived as a
           400, which the panel never rendered, so it sat on "reading the
           tape…" indefinitely. It is an answer now, and this says it. */}
-      {data && !data.written ? (
+      {state.kind === 'empty' && !state.data.written ? (
         <p className="muted">
           The tape has never written <code>quotes</code>. That is not an empty window — nothing
           has been projected here yet. <code>galata-tape-rebuild</code> writes it from the
           archive, and an unreadable tape root looks the same, which the header above says.
         </p>
       ) : null}
-      {data && data.written && data.rows.length === 0 ? (
+      {state.kind === 'empty' && state.data.written ? (
         <p className="muted">Nothing in that window.</p>
       ) : null}
       <table className="tape">

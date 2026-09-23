@@ -1,4 +1,5 @@
 import { $api } from './contract/client'
+import { panelState } from './panel'
 import { useRecordAdvances } from './live/status'
 
 /**
@@ -16,20 +17,22 @@ import { useRecordAdvances } from './live/status'
  */
 export default function Failures() {
   const advanced = useRecordAdvances('quotes')
-  const { data, error, isPending } = $api.useQuery('get', '/v1/failures')
+  const read = $api.useQuery('get', '/v1/failures')
+  const state = panelState(read, (d) => d.failing.length === 0)
 
-  if (error) {
+  if (state.kind === 'refused') {
     return (
       <section>
         <h2>Failures</h2>
         <div className="refusal">
           <strong>The failures could not be read.</strong>
-          <p>{String(error)}</p>
+          <p>{String(state.error)}</p>
         </div>
       </section>
     )
   }
 
+  const data = state.kind === 'reading' ? undefined : state.data
   const failing = data?.failing ?? []
 
   return (
@@ -43,14 +46,15 @@ export default function Failures() {
         {' · '}
         {advanced === null ? 'the record has not moved since this page loaded' : `advanced ${advanced}s ago`}
       </p>
-      {isPending ? <p className="muted">reading the failures…</p> : null}
-      {data && failing.length === 0 ? (
+      {state.kind === 'reading' ? <p className="muted">reading the failures…</p> : null}
+      {state.kind === 'empty' ? (
         /* **None is a sentence, not an empty table.** And it says how much was
            looked at, so a clean record reads differently from a wrong archive
            root — which would also show nothing. */
         <p className="muted">
-          The record holds no failure. {data.partitions} partition
-          {data.partitions === 1 ? '' : 's'} examined, {data.with_failures} with anything to read.
+          The record holds no failure. {state.data.partitions} partition
+          {state.data.partitions === 1 ? '' : 's'} examined, {state.data.with_failures} with
+          anything to read.
         </p>
       ) : null}
       {failing.length > 0 ? (

@@ -81,7 +81,7 @@ export default function Candles() {
     { enabled: !!chosen },
   )
   const state = panelState(read, (d) => d.rows.length === 0)
-  const { data, error } = read
+  const { data } = read
   const rows = (data?.rows ?? []) as Row[]
 
   const candles = useMemo(() => {
@@ -127,13 +127,13 @@ export default function Candles() {
     }
   }, [chart, candles])
 
-  if (error) {
+  if (state.kind === 'refused') {
     return (
       <section>
         <h2>Candles</h2>
         <div className="refusal">
           <strong>The candles could not be read.</strong>
-          <p>{String(error)}</p>
+          <p>{String(state.error)}</p>
         </div>
       </section>
     )
@@ -164,9 +164,25 @@ export default function Candles() {
           : `advanced ${advanced}s ago`}
       </p>
       {/* **It had no reading case**, so an outstanding read showed a heading
-          and an empty chart with nothing to say why. */}
-      {state.kind === 'reading' ? <p className="muted">reading the candles…</p> : null}
-      {state.kind === 'empty' ? <p className="muted">No candles in that window.</p> : null}
+          and an empty chart with nothing to say why.
+
+          `!chosen` comes first and is not one of the four. This query waits
+          for a ticker, and a query that was never issued is not reading — but
+          against a tape with no candles in it this panel said "reading the
+          candles…" indefinitely, because a disabled query reports `isPending`
+          forever. WHY nothing was asked is this panel's own fact, the way
+          `written` is the tape's, so it is said here rather than folded into
+          a fifth shared state. */}
+      {!chosen ? (
+        <p className="muted">
+          The record holds no instrument with candles, so nothing was asked for. This reads the
+          record, not a broker — an empty tape root looks the same.
+        </p>
+      ) : state.kind === 'reading' ? (
+        <p className="muted">reading the candles…</p>
+      ) : state.kind === 'empty' ? (
+        <p className="muted">No candles in that window.</p>
+      ) : null}
       <div ref={container} style={{ height: 220 }} />
     </section>
   )

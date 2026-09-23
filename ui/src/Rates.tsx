@@ -1,4 +1,5 @@
 import { $api } from './contract/client'
+import { panelState } from './panel'
 import { useRecordAdvances } from './live/status'
 
 /** An hour, in UTC, on the calendar the partitions use. */
@@ -23,20 +24,22 @@ function hour(micros: number): string {
  */
 export default function Rates() {
   const advanced = useRecordAdvances('quotes')
-  const { data, error, isPending } = $api.useQuery('get', '/v1/rates')
+  const read = $api.useQuery('get', '/v1/rates')
+  const state = panelState(read, (d) => d.buckets.length === 0)
 
-  if (error) {
+  if (state.kind === 'refused') {
     return (
       <section>
         <h2>Rates</h2>
         <div className="refusal">
           <strong>The rates could not be read.</strong>
-          <p>{String(error)}</p>
+          <p>{String(state.error)}</p>
         </div>
       </section>
     )
   }
 
+  const data = state.kind === 'reading' ? undefined : state.data
   const buckets = data?.buckets ?? []
   // One row per hour, one column per dataset — the shape is the point, and a
   // dataset that received nothing in an hour is blank rather than zero,
@@ -58,8 +61,8 @@ export default function Rates() {
         {' · '}
         {advanced === null ? 'the record has not moved since this page loaded' : `advanced ${advanced}s ago`}
       </p>
-      {isPending ? <p className="muted">counting…</p> : null}
-      {data && buckets.length === 0 ? (
+      {state.kind === 'reading' ? <p className="muted">counting…</p> : null}
+      {state.kind === 'empty' ? (
         <p className="muted">The record holds no rows yet.</p>
       ) : null}
       {buckets.length > 0 ? (

@@ -1,4 +1,5 @@
 import { $api } from './contract/client'
+import { panelState } from './panel'
 import {
   heardAgo,
   silenceReason,
@@ -33,14 +34,19 @@ function Refusal({ what, error }: { what: string; error: unknown }) {
 
 /** Which archive is being watched, and what a reader may prune on. */
 function Header() {
-  const { data, error } = $api.useQuery('get', '/v1/about')
+  // **Never empty, and that is stated rather than left out.** `/v1/about`
+  // answers with two roots or it fails; there is no collection here to be
+  // empty of. Saying so costs one lambda and leaves no panel in this tree
+  // deciding the order for itself.
+  const state = panelState($api.useQuery('get', '/v1/about'), () => false)
+  const data = state.kind === 'reading' || state.kind === 'refused' ? undefined : state.data
   // Configured and observed are different facts, and an empty listing is
   // consistent with both a clean record and a typo.
   const missing = [data?.archive, data?.tape].filter((r) => r && !r.readable) as Array<{
     path: string
     var: string
   }>
-  if (error) return <Refusal what="The archive" error={error} />
+  if (state.kind === 'refused') return <Refusal what="The archive" error={state.error} />
   return (
     <header>
       <h1>galata-tower</h1>
@@ -80,13 +86,14 @@ function Header() {
 
 /** The partitions the record holds. A fact on disk, not a claim by a process. */
 function Partitions() {
-  const { data, error, isPending } = $api.useQuery('get', '/v1/partitions')
-  if (error) return <Refusal what="The partitions" error={error} />
+  const state = panelState($api.useQuery('get', '/v1/partitions'), (d) => d.length === 0)
+  if (state.kind === 'refused') return <Refusal what="The partitions" error={state.error} />
+  const data = state.kind === 'reading' ? undefined : state.data
   return (
     <section>
       <h2>Partitions {data ? <span className="count">{data.length}</span> : null}</h2>
-      {isPending ? <p className="muted">reading the store…</p> : null}
-      {data?.length === 0 ? <p className="muted">The archive holds none.</p> : null}
+      {state.kind === 'reading' ? <p className="muted">reading the store…</p> : null}
+      {state.kind === 'empty' ? <p className="muted">The archive holds none.</p> : null}
       <ul className="rows">
         {data?.map((p) => (
           <li key={p.path}>
@@ -106,12 +113,20 @@ function Partitions() {
  * number rather than to have an opinion about it.
  */
 function Overdue() {
-  const { data, error } = $api.useQuery('get', '/v1/overdue')
-  if (error) return <Refusal what="The overdue partitions" error={error} />
+  // **This had no reading case.** `data?.length === 0` is false while the read
+  // is in flight, so a pending panel drew its heading over nothing and said
+  // why. It is the sixth hand-written copy, and the one that was missing a
+  // branch — which is the argument for this function in one panel.
+  const state = panelState($api.useQuery('get', '/v1/overdue'), (d) => d.length === 0)
+  if (state.kind === 'refused') return <Refusal what="The overdue partitions" error={state.error} />
+  const data = state.kind === 'reading' ? undefined : state.data
   return (
     <section>
       <h2>Closed, still holding {data ? <span className="count">{data.length}</span> : null}</h2>
-      {data?.length === 0 ? <p className="muted">Nothing closed is still holding segments.</p> : null}
+      {state.kind === 'reading' ? <p className="muted">reading the record…</p> : null}
+      {state.kind === 'empty' ? (
+        <p className="muted">Nothing closed is still holding segments.</p>
+      ) : null}
       <ul className="rows">
         {data?.map((o) => (
           <li key={o.path}>

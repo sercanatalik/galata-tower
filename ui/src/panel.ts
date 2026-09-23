@@ -48,6 +48,13 @@ export function panelState<T>(read: Read<T>, isEmpty: (data: T) => boolean): Pan
   }
   // Before emptiness: a read still in flight has no emptiness to report. A
   // panel that says "nothing here" while the answer is on its way is guessing.
+  //
+  // **A DISABLED query lands here too, and stays.** TanStack reports a query
+  // waiting on `enabled` as pending forever, so a panel with a dependent read
+  // will say "reading…" about a read it never issued — which `Candles` did,
+  // against a tape holding no candles. That is not a fifth state: the caller
+  // knows WHY it asked for nothing and can say so in its own words, which is
+  // more use than anything this function could return.
   if (read.isPending || read.data === undefined) {
     return { kind: 'reading' }
   }
