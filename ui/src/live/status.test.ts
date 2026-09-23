@@ -12,7 +12,7 @@ function state(over: Partial<LiveState>): LiveState {
     bounds: {},
     advancedAt: {},
     resyncs: 0,
-    reconnects: 0,
+    drops: 0,
     missed: 0,
     venues: new Map(),
     tick: 0,
@@ -81,6 +81,27 @@ describe('why the screen is silent', () => {
     const why = whySilent(state({ seenBoard: false }))
     expect(why.case).toBe('no-stream')
     expect(silenceReason(why)).toMatch(/stream/i)
+  })
+
+  it('will not describe the tower while it cannot hear the tower', () => {
+    // Observed on the real screen, 2026-09-23, by restarting the tower under a
+    // live browser: it said "Live not connected" directly above "The tower is
+    // subscribed; no venue has published yet." Both came from the same state
+    // and only one could be known — `whySilent` asked whether a board had EVER
+    // arrived, never whether the stream was up NOW, so it reported the last
+    // board's broker as current.
+    //
+    // The broker here says connected, because that is what the last frame said
+    // before the stream went. The answer must still be that we cannot see.
+    const why = whySilent(
+      state({ connected: false, seenBoard: true, broker: { connected: true, attempts: 0, refusal: null } }),
+    )
+    expect(why.case).toBe('stream-lost')
+    const said = silenceReason(why)
+    expect(said).toMatch(/dropped/i)
+    // The two sentences that were wrong: it must claim neither.
+    expect(said).not.toMatch(/subscribed/i)
+    expect(said).not.toMatch(/no venue has published/i)
   })
 
   it('distinguishes the tower having no broker, and says how hard it tried', () => {

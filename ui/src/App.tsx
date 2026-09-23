@@ -154,7 +154,7 @@ function Status() {
         Live <span className="count">{live.connected ? 'connected' : 'not connected'}</span>
       </h2>
       <p className="muted">
-        {live.reconnects} reconnects · {live.missed} snapshots missed
+        {live.drops} {live.drops === 1 ? 'drop' : 'drops'} · {live.missed} snapshots missed
         {live.missed > 0 ? ' — the stream said so rather than dropping them quietly' : null}
       </p>
       {venues.length === 0 ? (
@@ -170,7 +170,7 @@ function Status() {
             never dropped — absence after presence is the statement an operator
             most needs — so a dead bus rendered as a venue quietly getting
             older. Found by running a real broker for the first time and then
-            killing it: the screen said `Live connected · 0 reconnects` over
+            killing it: the screen said `Live connected · 0 drops` over
             `hyperliquid 53s ago`, every clause true and the conclusion wrong.
 
             `connected` above is the BROWSER's stream to this tower, which is

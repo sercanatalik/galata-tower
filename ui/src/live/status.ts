@@ -79,7 +79,11 @@ export interface LiveState {
    */
   resyncs: number
   /** Reconnects since load. A count, not a verdict. */
-  reconnects: number
+  /** How many times the stream DROPPED. Not reconnections: counted on the way
+   * down, which is the event an operator cares about and the one that happens
+   * first. During an outage a reconnect-counter would read 0 while the stream
+   * was down — saying less, at the moment somebody is looking. */
+  drops: number
   /** Snapshots the server told us we missed. A gap is an event, never an absence. */
   missed: number
   venues: ReadonlyMap<string, LiveVenue>
@@ -94,7 +98,7 @@ let state: LiveState = {
   bounds: {},
   advancedAt: {},
   resyncs: 0,
-  reconnects: 0,
+  drops: 0,
   missed: 0,
   venues: new Map(),
   tick: 0,
@@ -159,8 +163,11 @@ function open() {
   source.addEventListener('open', () => {
     // **Counted on the way UP.** `EventSource` reconnects on its own, and a
     // connection being established is the moment a refetch can succeed — the
-    // disconnection is not, which is what `reconnects` records for the Live
-    // panel to report.
+    // disconnection is not, which is what `drops` records for the Live panel
+    // to report. That counter was called `reconnects` until 2026-09-23, when
+    // restarting the tower under a live browser showed the screen saying
+    // "not connected · 1 reconnects" — one drop, zero reconnections. This
+    // comment was already right; the name a reader saw was not.
     const again = isAReasonToResync('connected', opened)
     opened += 1
     set({ connected: true, resyncs: state.resyncs + (again ? 1 : 0) })
@@ -231,7 +238,7 @@ function open() {
 
   source.addEventListener('error', () => {
     // EventSource retries by itself. What is recorded is that it happened.
-    if (state.connected) set({ connected: false, reconnects: state.reconnects + 1 })
+    if (state.connected) set({ connected: false, drops: state.drops + 1 })
     else set({ connected: false })
   })
 
@@ -314,6 +321,10 @@ export type Silence =
   | { case: 'publishing' }
   /** This browser has not had a board frame yet. Ours, not the tower's. */
   | { case: 'no-stream' }
+  /** We had a stream and lost it. Everything the tower told us is now the
+   * last thing it told us, not the current state — including whether it has a
+   * broker. Ours, not the tower's. */
+  | { case: 'stream-lost' }
   /** The tower is reachable and has no broker. It is still trying. */
   | { case: 'no-broker'; attempts: number; refusal: string | null }
   /** The tower is subscribed and no venue has published. */
@@ -323,6 +334,13 @@ export type Silence =
 export function whySilent(live: LiveState): Silence {
   if (live.venues.size > 0) return { case: 'publishing' }
   if (!live.seenBoard) return { case: 'no-stream' }
+  // **Before anything is said about the broker.** This asked only whether a
+  // board had EVER arrived, so after the stream dropped it went on reporting
+  // the last board's broker state as though it were current — observed
+  // 2026-09-23 as "Live not connected" directly above "The tower is
+  // subscribed", which cannot both be known at once. What the tower is doing
+  // while we cannot hear it is not something this browser knows.
+  if (!live.connected) return { case: 'stream-lost' }
   if (live.broker && !live.broker.connected) {
     return {
       case: 'no-broker',
@@ -336,7 +354,7 @@ export function whySilent(live: LiveState): Silence {
 /**
  * The reason as a sentence, shared so two panels cannot disagree about it.
  *
- * **Counted, never judged**, like the reconnects beside it: the attempt count
+ * **Counted, never judged**, like the drops beside it: the attempt count
  * is a number and the refusal is the broker's own words. There is no threshold
  * here at which this turns red, because the tower does not know one.
  */
@@ -346,6 +364,8 @@ export function silenceReason(silence: Silence): string {
       return ''
     case 'no-stream':
       return 'Waiting for the stream.'
+    case 'stream-lost':
+      return 'The stream to this tower has dropped, so nothing here is current — what the tower is doing, and whether it still has a broker, are things this browser cannot see while it is disconnected.'
     case 'no-broker': {
       // Zero is not "it has not tried" — it is a connection that WAS
       // established and dropped, where the count belongs to the client doing
@@ -437,13 +457,15 @@ export function useFollowTheRecord(): void {
     // reads have just been done.
     //
     // It is the connection that triggers this, never the disconnection. An
-    // earlier draft keyed on `reconnects` and so refetched everything the
+    // earlier draft keyed on the drop counter (then called `reconnects`, now
+    // `drops`) and so refetched everything the
     // moment the stream dropped — while the tower was still down. With
     // retries off, all nine panels held that refusal permanently.
     if (live.resyncs === 0) return
     client.invalidateQueries()
     // **`connections`, matching the guard above.** An earlier draft guarded on
-    // `connections` and depended on `reconnects`: the effect re-ran on the
+    // `connections` and depended on the drop counter (`drops` now): the effect
+    // re-ran on the
     // DROP, where the guard correctly returned early, and never again on the
     // reopen — so nothing refetched and the screen kept its pre-outage
     // figures. A guard and a dependency that name different things is a guard
