@@ -192,6 +192,35 @@ asking.
 got, and is kept runnable so the next person can check them rather than trust
 them.
 
+### Making the record move
+
+The two numbers above measure the halves. To watch the whole thing — grow the
+tape, get an event, see the panel refetch — give the tower a copy of the tape
+with its newest segment held back, and then put it back:
+
+```sh
+cp -R ../galata-datawatch/var/tape /tmp/tape-live
+mv /tmp/tape-live/kind=quotes/date=*/s-*.parquet /tmp/held.parquet   # the newest one
+GALATA_TAPE=/tmp/tape-live cargo run --release
+# open the screen, note "durable to stream_seq …", then:
+mv /tmp/held.parquet /tmp/tape-live/kind=quotes/date=2026-09-22/
+```
+
+The bound moves within a second and the Tape panel refetches — no poll, no
+reload. Done on 2026-09-23: `68286` became `1790058637809031` and the rows
+changed with it. The bytes are the real tape's; nothing is fabricated, and the
+bound moves exactly as it does after a `galata-tape-rebuild`.
+
+**The "advanced Ns ago" counter cannot be measured from a background tab.**
+Chrome throttles timers in a tab that is not visible, and a tab driven from a
+tool is never focused — `document.visibilityState` says `hidden`. Measured that
+way the counter appeared to run at 2× real time, then at 1.19×, then to stop
+altogether; all three were the throttle. The value itself is computed from
+`Date.now()` at render rather than accumulated, so it is right whenever it is
+drawn: what the throttle changes is how often it is redrawn, never what it
+says. Look at the tab, or read the number as an eyeball check rather than a
+measurement.
+
 Each panel shows how long since the record it draws last advanced, because a
 current table and an hour-old one are otherwise identical.
 
