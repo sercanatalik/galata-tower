@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 
 import { useChart } from './charts/useChart'
 import { $api } from './contract/client'
+import { panelState } from './panel'
 import { dec, plot } from './contract/money'
 import { useRecordAdvances } from './live/status'
 
@@ -68,7 +69,7 @@ export default function Candles() {
 
   // **Waits for what narrows it** — TanStack's documented dependent query. No
   // unfiltered read is ever issued, where before one fired and was corrected.
-  const { data, error } = $api.useQuery(
+  const read = $api.useQuery(
     'get',
     '/v1/tape/{kind}',
     {
@@ -79,6 +80,8 @@ export default function Candles() {
     },
     { enabled: !!chosen },
   )
+  const state = panelState(read, (d) => d.rows.length === 0)
+  const { data, error } = read
   const rows = (data?.rows ?? []) as Row[]
 
   const candles = useMemo(() => {
@@ -160,9 +163,10 @@ export default function Candles() {
           ? 'the record has not moved since this page loaded'
           : `advanced ${advanced}s ago`}
       </p>
-      {data && rows.length === 0 ? (
-        <p className="muted">No candles in that window.</p>
-      ) : null}
+      {/* **It had no reading case**, so an outstanding read showed a heading
+          and an empty chart with nothing to say why. */}
+      {state.kind === 'reading' ? <p className="muted">reading the candles…</p> : null}
+      {state.kind === 'empty' ? <p className="muted">No candles in that window.</p> : null}
       <div ref={container} style={{ height: 220 }} />
     </section>
   )

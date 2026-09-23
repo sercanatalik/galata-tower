@@ -1,4 +1,5 @@
 import { $api } from './contract/client'
+import { panelState } from './panel'
 import { heardAgo, useLiveStatus, useRecordAdvances, venueLag } from './live/status'
 
 /**
@@ -44,8 +45,13 @@ export default function Instruments() {
   // for "six instruments, their ages"; against a tape holding all six it
   // showed zero.
   useRecordAdvances('quotes')
-  const { data } = $api.useQuery('get', '/v1/instruments')
-  const held = data?.instruments ?? []
+  // **It never asked about `error`.** With the route returning 500 this panel
+  // said "The record holds no instrument… an empty table here means an empty
+  // or unreadable tape root" — every clause false, and worse than a blank
+  // because it names a cause a reader will go and check.
+  const read = $api.useQuery('get', '/v1/instruments')
+  const state = panelState(read, (d) => d.instruments.length === 0)
+  const held = state.kind === 'ready' ? state.data.instruments : []
 
   // A venue's live account of one instrument, where one has arrived. Keyed by
   // venue and ticker: the record calls the dataset a `kind` and the status
@@ -78,7 +84,14 @@ export default function Instruments() {
       <h2>
         Instruments <span className="count">{rows.length}</span>
       </h2>
-      {rows.length === 0 ? (
+      {state.kind === 'refused' ? (
+        <div className="refusal">
+          <strong>The instruments could not be read.</strong>
+          <p>{String(state.error)}</p>
+        </div>
+      ) : state.kind === 'reading' ? (
+        <p className="muted">reading the record…</p>
+      ) : state.kind === 'empty' ? (
         <p className="muted">
           The record holds no instrument. This reads the tape, so it does not
           need a broker — an empty table here means an empty or unreadable tape
