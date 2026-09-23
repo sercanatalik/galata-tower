@@ -222,6 +222,12 @@ struct About {
 /// surface here answers `[]` and none of them says *there is no here*. That is
 /// the failure `overdue_closed` was written to catch — *"the wrong var
 /// directory"* — and the screen built on it could not see it.
+///
+/// Verified on screen with the tape root removed: the header reads *"A root
+/// is not there. /tmp/nope-tape cannot be listed — set GALATA_TAPE"*, while
+/// Partitions and Overdue still answer from the readable archive. The commit
+/// that introduced this said the screen check had not run, because the browser
+/// was unavailable at the time; it has since.
 #[derive(Serialize, ToSchema)]
 struct Root {
     /// The path the tower was given.
