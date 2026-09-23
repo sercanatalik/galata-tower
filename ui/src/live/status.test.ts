@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest'
 
-import { heardAgo, isAReasonToResync, silenceReason, sinceArrival, venueLag, whySilent } from './status'
+import {
+  afterDisconnect,
+  afterLag,
+  heardAgo,
+  isAReasonToResync,
+  silenceReason,
+  sinceArrival,
+  venueLag,
+  whySilent,
+} from './status'
 import type { LiveState } from './status'
 
 /** A LiveState with only what a test cares about set. */
@@ -183,5 +192,41 @@ describe('a reason to resync', () => {
     // Same count, opposite answers: the event is what carries the meaning.
     expect(isAReasonToResync('connected', 3)).toBe(true)
     expect(isAReasonToResync('disconnected', 3)).toBe(false)
+  })
+})
+
+describe('the counters that only a real stream had ever exercised', () => {
+  it('adds a lag to what was already missed, rather than replacing it', () => {
+    // **The failure this is for** is not "the arithmetic is wrong" — it is a
+    // refactor that captures `state` as a snapshot instead of reading the
+    // module binding, after which every lag overwrites the last and the screen
+    // reports the most recent gap as the session total.
+    //
+    // So the assertion is about the SECOND event, not the sum: a replacing
+    // implementation also gets a single lag right.
+    const once = afterLag(state({ missed: 0 }), 3)
+    expect(once.missed).toBe(3)
+
+    const twice = afterLag(state({ missed: 3 }), 4)
+    expect(twice.missed).toBe(7)
+    expect(twice.missed).not.toBe(4)
+  })
+
+  it('counts a drop once however many times the browser retries it', () => {
+    // `EventSource` retries by itself, repeatedly, and every attempt raises
+    // `error`. Watched live 2026-09-23: a tower killed for half a minute read
+    // "1 drop" throughout.
+    const dropped = afterDisconnect(state({ connected: true, drops: 0 }))
+    expect(dropped).toEqual({ connected: false, drops: 1 })
+
+    // Already down: the retry is not a new drop.
+    const retried = afterDisconnect(state({ connected: false, drops: 1 }))
+    expect(retried.connected).toBe(false)
+    expect(retried.drops).toBeUndefined()
+
+    // And ten more retries still leave it at one.
+    let live = state({ connected: false, drops: 1 })
+    for (let i = 0; i < 10; i += 1) live = { ...live, ...afterDisconnect(live) }
+    expect(live.drops).toBe(1)
   })
 })

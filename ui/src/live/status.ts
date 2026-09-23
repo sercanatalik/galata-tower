@@ -153,6 +153,41 @@ function set(next: Partial<LiveState>) {
 // connection is the first — which `isAReasonToResync` answers.
 let opened = 0
 
+/**
+ * A lag, ADDED to what was already missed.
+ *
+ * **It accumulates only because `state` is a module binding that `set`
+ * reassigns.** Captured as a snapshot instead — which is the shape a refactor
+ * to a closure or a hook produces naturally — every lag would overwrite the
+ * last, and the screen would report the size of the most recent gap as the
+ * session's total. Watched live on 2026-09-23: 4,000 snapshots published in
+ * 166ms produced "3185 snapshots missed".
+ *
+ * A function rather than a line in a handler, because a line in a handler is
+ * not reachable from a test that does not open a connection, and these tests
+ * deliberately do not.
+ */
+export function afterLag(live: LiveState, missed: number): Partial<LiveState> {
+  return { missed: live.missed + missed }
+}
+
+/**
+ * A stream that went away, counted once however many times it is retried.
+ *
+ * **`EventSource` retries on its own, repeatedly, for as long as the stream is
+ * down**, and every attempt raises `error`. Counting them all would turn a
+ * half-minute outage into dozens of drops. The guard lives HERE rather than in
+ * the caller so that a test can reach it: a guard in the caller is a guard no
+ * test sees.
+ *
+ * Watched live: a tower killed for half a minute read "1 drop" and stayed at
+ * one across every retry.
+ */
+export function afterDisconnect(live: LiveState): Partial<LiveState> {
+  if (!live.connected) return { connected: false }
+  return { connected: false, drops: live.drops + 1 }
+}
+
 let source: EventSource | null = null
 let ticker: ReturnType<typeof setInterval> | null = null
 
@@ -233,13 +268,12 @@ function open() {
 
   source.addEventListener('lagged', (event) => {
     const { missed } = JSON.parse((event as MessageEvent<string>).data) as { missed: number }
-    set({ missed: state.missed + missed })
+    set(afterLag(state, missed))
   })
 
   source.addEventListener('error', () => {
     // EventSource retries by itself. What is recorded is that it happened.
-    if (state.connected) set({ connected: false, drops: state.drops + 1 })
-    else set({ connected: false })
+    set(afterDisconnect(state))
   })
 
   ticker ??= setInterval(() => set({ tick: state.tick + 1 }), 1000)
