@@ -98,9 +98,11 @@ function Header() {
             <p key={problem}>{problem}</p>
           ))}
           <p className="muted">
-            Rows in an overlapping range are read twice. <code>galata-tape-rebuild --replace</code>{' '}
-            rewrites the affected partitions; nothing here will, because the tape is written by
-            that and read by this.
+            Rows in an overlapping range are read twice.{' '}
+            <code>galata-tape-rebuild --replace &lt;venue&gt;</code> rewrites that venue&apos;s
+            segments; a segment with no venue label means the tape predates labelling and must be
+            removed and rebuilt. Nothing here will do either, because the tape is written by that and
+            read by this.
           </p>
         </div>
       ) : null}

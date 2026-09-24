@@ -132,7 +132,15 @@ export default function Tape() {
             </option>
           ))}
         </select>
-        · durable to stream_seq {data?.bound ?? '…'}
+        {/* **One position per venue.** Each venue numbers its stream from its
+            own capture process, so the numbers are not comparable across
+            venues and are never summarised into one. */}
+        · durable to stream_seq{' '}
+        {data
+          ? Object.entries(data.bound)
+              .map(([venue, position]) => `${venue} ${position}`)
+              .join(', ') || 'nothing'
+          : '…'}
         {/* **A stale table and a current one look identical**, which is the
             whole reason this is here. Measured locally against a local
             arrival, never by subtracting the record's clock from ours. */}

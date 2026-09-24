@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  afterBoard,
   afterDisconnect,
   afterLag,
+  afterTapeMoved,
   heardAgo,
   isAReasonToResync,
   silenceReason,
@@ -228,5 +230,27 @@ describe('the counters that only a real stream had ever exercised', () => {
     let live = state({ connected: false, drops: 1 })
     for (let i = 0; i < 10; i += 1) live = { ...live, ...afterDisconnect(live) }
     expect(live.drops).toBe(1)
+  })
+})
+
+describe('the record, per venue', () => {
+  it('advances a kind when any one of its venues moves', () => {
+    const live = state({ bounds: { quotes: { hyperliquid: 10, 'rh-crypto': 9_000_000 } } })
+    const next = afterBoard(live, { quotes: { hyperliquid: 10, 'rh-crypto': 9_000_004 } }, 42)
+    expect(next.advancedAt.quotes).toBe(42)
+  })
+
+  it('does not advance a kind whose every venue restates its position', () => {
+    // A reconnect's frame restates where the record stands; it is not news.
+    const live = state({ bounds: { quotes: { hyperliquid: 10, 'rh-crypto': 9_000_000 } } })
+    const next = afterBoard(live, { quotes: { hyperliquid: 10, 'rh-crypto': 9_000_000 } }, 42)
+    expect(next.advancedAt.quotes).toBeUndefined()
+  })
+
+  it("keeps the other venues' positions when one venue's stream moves", () => {
+    const live = state({ bounds: { quotes: { hyperliquid: 10, 'rh-crypto': 9_000_000 } } })
+    const next = afterTapeMoved(live, { kind: 'quotes', venue: 'rh-crypto', bound: 9_000_004 }, 7)
+    expect(next.bounds.quotes).toEqual({ hyperliquid: 10, 'rh-crypto': 9_000_004 })
+    expect(next.advancedAt.quotes).toBe(7)
   })
 })

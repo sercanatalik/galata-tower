@@ -299,7 +299,11 @@ export interface components {
              *     connecting into a quiet hour would otherwise learn nothing until the
              *     next move, which may never come.
              */
-            bounds: Record<string, never>;
+            bounds: {
+                [key: string]: {
+                    [key: string]: number;
+                };
+            };
             /** @description Whether these venues are current or a record of an interrupted stream. */
             broker: components["schemas"]["BrokerState"];
             /** @description Every venue seen since the tower started, newest snapshot each. */
@@ -385,11 +389,10 @@ export interface components {
         };
         /** @description The record's gaps over a window, by cause. */
         Coverage: {
-            /**
-             * Format: int64
-             * @description The tape's durable bound, as every read here reports it.
-             */
-            bound: number;
+            /** @description The tape's durable bound per venue, as every read here reports it. */
+            bound: {
+                [key: string]: number;
+            };
             /** @description One entry per cause found, most time missing first. */
             causes: components["schemas"]["Cause"][];
             /**
@@ -578,10 +581,14 @@ export interface components {
         /** @description What the record holds, by instrument. */
         Instruments: {
             /**
-             * Format: int64
-             * @description The tape's durable bound, as every read here reports it.
+             * @description Each kind's durable bound per venue — what bounded the rows each kind
+             *     was read at.
              */
-            bound: number;
+            bounds: {
+                [key: string]: {
+                    [key: string]: number;
+                };
+            };
             /**
              * @description Newest first: an operator looks for what is current, or conspicuously
              *     is not.
@@ -667,26 +674,35 @@ export interface components {
             /** @description The venue, taken from the subject. */
             venue: string;
         };
-        /** @description A kind's tape has a new durable bound. */
+        /**
+         * @description One venue's tape for one kind has a new durable bound.
+         *
+         *     Per venue, because each venue numbers its own stream: one event per venue
+         *     that moved, rather than a kind's whole map re-sent for the browser to diff.
+         */
         TapeMoved: {
             /**
              * Format: int64
-             * @description The new durable position.
+             * @description The new durable position, in that venue's sequence.
              */
             bound: number;
             /** @description Which dataset, as `/v1/tape/{kind}` spells it. */
             kind: string;
+            /** @description Whose stream moved. */
+            venue: string;
         };
         /** @description A window's rows, and how far the store is durable. */
         View: {
             /**
-             * Format: int64
-             * @description How far the store has durably written, in the tape's own sequence.
+             * @description How far the store has durably written, in each venue's own sequence.
              *
              *     **Returned with the rows on purpose.** Forty rows from a quiet hour and
              *     forty rows from a store that stopped there look identical without it.
+             *     **Per venue**, because each venue numbers its own stream.
              */
-            bound: number;
+            bound: {
+                [key: string]: number;
+            };
             /** @description The dataset. */
             kind: string;
             /**
@@ -717,8 +733,8 @@ export interface components {
              *     error and sat on "reading the tape…" indefinitely against a route
              *     answering in half a millisecond.
              *
-             *     `bound` is zero when this is false. Zero alone would read as *durable
-             *     to the beginning of time*; the pair is what a reader needs.
+             *     `bound` is empty when this is false. Empty alone would read as *no
+             *     venue has anything durable*; the pair is what a reader needs.
              */
             written: boolean;
         };

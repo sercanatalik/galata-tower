@@ -49,13 +49,14 @@ export interface LiveState {
    */
   broker: BrokerState | null
   /**
-   * Each kind's durable bound, as the tower last read it.
+   * Each kind's durable bound per venue, as the tower last read it.
    *
    * The tower watches this on everyone's behalf — asking whether the tape
-   * moved is 53µs against 2.85ms to read it — so nothing here polls. A value
-   * changing is the whole signal.
+   * moved is 124µs against 3ms to read it — so nothing here polls. A value
+   * changing is the whole signal. **Per venue**, because each venue numbers
+   * its own stream; the positions of two venues are not comparable.
    */
-  bounds: Readonly<Record<string, number>>
+  bounds: Readonly<Record<string, Readonly<Record<string, number>>>>
   /**
    * Our wall clock when each kind last advanced.
    *
@@ -167,6 +168,44 @@ let opened = 0
  * not reachable from a test that does not open a connection, and these tests
  * deliberately do not.
  */
+/**
+ * Where the record stands after a board frame, and which kinds that advanced.
+ *
+ * **A kind advanced when any one of its venues' positions did.** Each venue
+ * numbers its own stream, so positions are compared venue by venue and never
+ * across. A frame restating the same positions after a reconnect advances
+ * nothing — treating it as an advance would show a stale table as fresh.
+ */
+export function afterBoard(
+  live: LiveState,
+  bounds: Record<string, Record<string, number>>,
+  now: number,
+): Pick<LiveState, 'bounds' | 'advancedAt'> {
+  const advancedAt = { ...live.advancedAt }
+  for (const [kind, venues] of Object.entries(bounds)) {
+    const seen = live.bounds[kind] ?? {}
+    if (Object.entries(venues).some(([venue, bound]) => seen[venue] !== bound)) {
+      advancedAt[kind] = now
+    }
+  }
+  return { bounds, advancedAt }
+}
+
+/** One venue's stream moved for one kind: record it, and stamp the kind. */
+export function afterTapeMoved(
+  live: LiveState,
+  moved: TapeMoved,
+  now: number,
+): Pick<LiveState, 'bounds' | 'advancedAt'> {
+  return {
+    bounds: {
+      ...live.bounds,
+      [moved.kind]: { ...(live.bounds[moved.kind] ?? {}), [moved.venue]: moved.bound },
+    },
+    advancedAt: { ...live.advancedAt, [moved.kind]: now },
+  }
+}
+
 export function afterLag(live: LiveState, missed: number): Partial<LiveState> {
   return { missed: live.missed + missed }
 }
@@ -226,22 +265,17 @@ function open() {
     // kind we had not seen: a frame after a reconnect restates the same
     // position, and treating that as an advance would show a stale table as
     // fresh — which is the defect this whole change exists to fix.
-    const bounds = (frame.bounds ?? {}) as Record<string, number>
-    const advancedAt = { ...state.advancedAt }
-    for (const [kind, bound] of Object.entries(bounds)) {
-      if (state.bounds[kind] !== bound) advancedAt[kind] = now
-    }
+    const { bounds, advancedAt } = afterBoard(state, frame.bounds ?? {}, now)
     set({ venues, connected: true, seenBoard: true, broker: frame.broker, bounds, advancedAt })
   })
 
   // The record moved. The rows are NOT here: the route that serves them caps
   // them already, and a browser not drawing this kind should not pay to
-  // receive it. This says which kind, and where it now stands.
+  // receive it. This says which kind, whose stream, and where it now stands.
   source.addEventListener('tape', (event) => {
     const moved = JSON.parse((event as MessageEvent<string>).data) as TapeMoved
     set({
-      bounds: { ...state.bounds, [moved.kind]: moved.bound },
-      advancedAt: { ...state.advancedAt, [moved.kind]: Date.now() },
+      ...afterTapeMoved(state, moved, Date.now()),
       resyncs: state.resyncs + (isAReasonToResync('advanced', opened) ? 1 : 0),
       connected: true,
     })

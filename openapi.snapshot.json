@@ -404,7 +404,24 @@
         ],
         "properties": {
           "bounds": {
-            "type": "object",
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "integer",
+                    "format": "int64"
+                  },
+                  "propertyNames": {
+                    "type": "string"
+                  }
+                },
+                "propertyNames": {
+                  "type": "string"
+                }
+              }
+            ],
             "description": "Each kind's durable bound, for the kinds that have written anything.\n\nHere as well as in the event, for the same reason the broker's state\nis: the event says it MOVED, and this says where it STANDS. A browser\nconnecting into a quiet hour would otherwise learn nothing until the\nnext move, which may never come."
           },
           "broker": {
@@ -528,9 +545,15 @@
         ],
         "properties": {
           "bound": {
-            "type": "integer",
-            "format": "int64",
-            "description": "The tape's durable bound, as every read here reports it."
+            "type": "object",
+            "description": "The tape's durable bound per venue, as every read here reports it.",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
           },
           "causes": {
             "type": "array",
@@ -788,14 +811,30 @@
         "type": "object",
         "description": "What the record holds, by instrument.",
         "required": [
-          "bound",
+          "bounds",
           "instruments"
         ],
         "properties": {
-          "bound": {
-            "type": "integer",
-            "format": "int64",
-            "description": "The tape's durable bound, as every read here reports it."
+          "bounds": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "integer",
+                    "format": "int64"
+                  },
+                  "propertyNames": {
+                    "type": "string"
+                  }
+                },
+                "propertyNames": {
+                  "type": "string"
+                }
+              }
+            ],
+            "description": "Each kind's durable bound per venue — what bounded the rows each kind\nwas read at."
           },
           "instruments": {
             "type": "array",
@@ -913,20 +952,25 @@
       },
       "TapeMoved": {
         "type": "object",
-        "description": "A kind's tape has a new durable bound.",
+        "description": "One venue's tape for one kind has a new durable bound.\n\nPer venue, because each venue numbers its own stream: one event per venue\nthat moved, rather than a kind's whole map re-sent for the browser to diff.",
         "required": [
           "kind",
+          "venue",
           "bound"
         ],
         "properties": {
           "bound": {
             "type": "integer",
             "format": "int64",
-            "description": "The new durable position."
+            "description": "The new durable position, in that venue's sequence."
           },
           "kind": {
             "type": "string",
             "description": "Which dataset, as `/v1/tape/{kind}` spells it."
+          },
+          "venue": {
+            "type": "string",
+            "description": "Whose stream moved."
           }
         }
       },
@@ -942,9 +986,15 @@
         ],
         "properties": {
           "bound": {
-            "type": "integer",
-            "format": "int64",
-            "description": "How far the store has durably written, in the tape's own sequence.\n\n**Returned with the rows on purpose.** Forty rows from a quiet hour and\nforty rows from a store that stopped there look identical without it."
+            "type": "object",
+            "description": "How far the store has durably written, in each venue's own sequence.\n\n**Returned with the rows on purpose.** Forty rows from a quiet hour and\nforty rows from a store that stopped there look identical without it.\n**Per venue**, because each venue numbers its own stream.",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int64"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
           },
           "kind": {
             "type": "string",
@@ -964,7 +1014,7 @@
           },
           "written": {
             "type": "boolean",
-            "description": "Whether the tape has ever written this dataset.\n\n**Never written is not the same as this window is empty**, and the\nstore keeps them apart deliberately — `tape::reader::unwritten` exists\nso a caller can tell *nothing has happened yet* from *this scope is\nmissing while the others are live*. Until 2026-09-23 that difference\narrived as a `400`, which says *the request was malformed*; the request\nis fine and the tape is simply empty. The screen never rendered that\nerror and sat on \"reading the tape…\" indefinitely against a route\nanswering in half a millisecond.\n\n`bound` is zero when this is false. Zero alone would read as *durable\nto the beginning of time*; the pair is what a reader needs."
+            "description": "Whether the tape has ever written this dataset.\n\n**Never written is not the same as this window is empty**, and the\nstore keeps them apart deliberately — `tape::reader::unwritten` exists\nso a caller can tell *nothing has happened yet* from *this scope is\nmissing while the others are live*. Until 2026-09-23 that difference\narrived as a `400`, which says *the request was malformed*; the request\nis fine and the tape is simply empty. The screen never rendered that\nerror and sat on \"reading the tape…\" indefinitely against a route\nanswering in half a millisecond.\n\n`bound` is empty when this is false. Empty alone would read as *no\nvenue has anything durable*; the pair is what a reader needs."
           }
         }
       }

@@ -104,6 +104,15 @@ pub enum TapeError {
     },
 }
 
+/// Each kind's durable bound, **per venue**: kind → venue → stream sequence.
+///
+/// Per venue because each venue numbers its stream from its own capture
+/// process's boot, so one position cannot bound two venues — galata-datawatch's
+/// `sequence-is-per-venue` reproduced a durable row hidden behind another
+/// venue's numbering. A max or a min over venues would be a number the screen
+/// shows and nobody can act on, so the map is reported whole.
+pub type Bounds = BTreeMap<String, BTreeMap<String, i64>>;
+
 /// Every served kind's durable bound, for the kinds that have written anything.
 ///
 /// **The cheap half.** `Reader::open` plus `bound()` reads parquet footers and
@@ -116,7 +125,7 @@ pub enum TapeError {
 /// A kind that has written nothing is absent from the map. That is an answer,
 /// not a failure: [`view`] refuses it because a caller asked for ROWS, and this
 /// caller asked whether anything had arrived.
-pub fn bounds(root: &Path) -> BTreeMap<String, i64> {
+pub fn bounds(root: &Path) -> Bounds {
     let mut found = BTreeMap::new();
     for kind in SERVED {
         let scope = format!("kind={}", kind.as_str());
@@ -128,7 +137,7 @@ pub fn bounds(root: &Path) -> BTreeMap<String, i64> {
         // here. The caller decides whether silence is worth a log line; doing
         // it here would do it once a second.
         if let Ok(reader) = galata_datawatch::tape::reader::Reader::open(root, &scopes) {
-            found.insert(kind.as_str().to_owned(), reader.bound().position);
+            found.insert(kind.as_str().to_owned(), reader.bound().positions.clone());
         }
     }
     found
@@ -163,8 +172,10 @@ pub struct Instrument {
 /// What the record holds, by instrument.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct Instruments {
-    /// The tape's durable bound, as every read here reports it.
-    pub bound: i64,
+    /// Each kind's durable bound per venue — what bounded the rows each kind
+    /// was read at.
+    #[schema(inline)]
+    pub bounds: Bounds,
     /// Newest first: an operator looks for what is current, or conspicuously
     /// is not.
     pub instruments: Vec<Instrument>,
@@ -184,7 +195,7 @@ pub struct Instruments {
 pub fn instruments(root: &Path) -> Instruments {
     // (venue, ticker, kind) -> (newest at_micros, rows)
     let mut seen: BTreeMap<(String, String, &'static str), (i64, usize)> = BTreeMap::new();
-    let mut bound = 0;
+    let mut bounds = Bounds::new();
 
     for kind in SERVED {
         let scope = format!("kind={}", kind.as_str());
@@ -197,7 +208,7 @@ pub fn instruments(root: &Path) -> Instruments {
         let Ok(reader) = galata_datawatch::tape::reader::Reader::open(root, &scopes) else {
             continue;
         };
-        bound = bound.max(reader.bound().position);
+        bounds.insert(kind.as_str().to_owned(), reader.bound().positions.clone());
         let window = galata_datawatch::tape::reader::Window {
             kind,
             from_micros: i64::MIN + 1,
@@ -256,7 +267,10 @@ pub fn instruments(root: &Path) -> Instruments {
         })
         .collect();
     instruments.sort_by_key(|i| std::cmp::Reverse(i.last_micros));
-    Instruments { bound, instruments }
+    Instruments {
+        bounds,
+        instruments,
+    }
 }
 
 /// A kind, from the name the tape writes for it.
@@ -293,11 +307,12 @@ pub const DEFAULT_LIMIT: usize = 1_000;
 pub struct View {
     /// The dataset.
     pub kind: String,
-    /// How far the store has durably written, in the tape's own sequence.
+    /// How far the store has durably written, in each venue's own sequence.
     ///
     /// **Returned with the rows on purpose.** Forty rows from a quiet hour and
     /// forty rows from a store that stopped there look identical without it.
-    pub bound: i64,
+    /// **Per venue**, because each venue numbers its own stream.
+    pub bound: BTreeMap<String, i64>,
     /// Whether the tape has ever written this dataset.
     ///
     /// **Never written is not the same as this window is empty**, and the
@@ -309,8 +324,8 @@ pub struct View {
     /// error and sat on "reading the tape…" indefinitely against a route
     /// answering in half a millisecond.
     ///
-    /// `bound` is zero when this is false. Zero alone would read as *durable
-    /// to the beginning of time*; the pair is what a reader needs.
+    /// `bound` is empty when this is false. Empty alone would read as *no
+    /// venue has anything durable*; the pair is what a reader needs.
     pub written: bool,
     /// How many rows the window holds, before any cap.
     ///
@@ -462,7 +477,7 @@ pub fn view(
     if !galata_datawatch::tape::reader::unwritten(root, &scopes).is_empty() {
         return Ok(View {
             kind: kind.as_str().to_owned(),
-            bound: 0,
+            bound: BTreeMap::new(),
             written: false,
             total: 0,
             rows: Vec::new(),
@@ -493,7 +508,7 @@ pub fn view(
     let total: usize = batches.iter().map(|batch| batch.num_rows()).sum();
     Ok(View {
         kind: kind.as_str().to_owned(),
-        bound: reader.bound().position,
+        bound: reader.bound().positions.clone(),
         written: true,
         total,
         rows: newest(&batches, limit)?,
@@ -547,8 +562,8 @@ pub struct Coverage {
     pub to: i64,
     /// Gap rows folded. Reported so a caller can see what the window held.
     pub rows: usize,
-    /// The tape's durable bound, as every read here reports it.
-    pub bound: i64,
+    /// The tape's durable bound per venue, as every read here reports it.
+    pub bound: BTreeMap<String, i64>,
     /// One entry per cause found, most time missing first.
     pub causes: Vec<Cause>,
 }
@@ -667,7 +682,7 @@ pub fn coverage(root: &Path, from: i64, to: i64) -> Result<Coverage, TapeError> 
             from,
             to,
             rows: 0,
-            bound: 0,
+            bound: BTreeMap::new(),
             causes: Vec::new(),
         });
     }
@@ -732,7 +747,7 @@ pub fn coverage(root: &Path, from: i64, to: i64) -> Result<Coverage, TapeError> 
         from,
         to,
         rows: seen,
-        bound: reader.bound().position,
+        bound: reader.bound().positions.clone(),
         causes,
     })
 }
@@ -946,9 +961,9 @@ mod tests {
         assert!(!view.written, "and it says it has never been written");
         assert_eq!(view.total, 0);
         assert!(view.rows.is_empty());
-        assert_eq!(
-            view.bound, 0,
-            "no durable frontier, reported beside `written`"
+        assert!(
+            view.bound.is_empty(),
+            "no durable frontier for any venue, reported beside `written`"
         );
     }
 
@@ -962,7 +977,11 @@ mod tests {
         };
         let view = view(&root, Kind::Quotes, 0, i64::MAX / 2, 1, None).expect("the tape reads");
         assert!(view.written);
-        assert!(view.bound > 0, "and carries a real frontier");
+        assert!(
+            !view.bound.is_empty() && view.bound.values().all(|position| *position > 0),
+            "and carries a real frontier for every venue it holds: {:?}",
+            view.bound
+        );
     }
 
     /// The malformed requests still refuse. A window that runs backwards and a

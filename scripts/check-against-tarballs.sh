@@ -77,6 +77,14 @@ if [[ ! -d "$SIBLING" ]]; then
     exit 2
 fi
 
+# **Purged first, by the sibling's own purge.** Cargo treats a
+# registry-sourced crate as immutable, so without it verifying galata-datawatch
+# reused a galata-segments 0.1.0 compiled from an EARLIER source at the same
+# version — and failed, on 2026-09-24, on functions the current source has.
+# The sibling's guard has always purged; this one never did. Called, not
+# copied, so the two cannot drift into purging different things.
+"$SIBLING/scripts/check-tarball-builds.sh" purge "$SIBLING"
+
 # Fresh tarballs, for the staging reason in the header.
 if ! packaged=$(cd "$SIBLING" && cargo package --workspace --allow-dirty 2>&1); then
     echo "against tarballs: the sibling would not package, so there is nothing to build against" >&2

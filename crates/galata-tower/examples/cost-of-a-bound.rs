@@ -10,10 +10,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for label in ["warm-up", "measured"] {
         let t = Instant::now();
-        let mut bound = 0;
+        let mut bound = std::collections::BTreeMap::new();
         for _ in 0..20 {
             let reader = galata_datawatch::tape::reader::Reader::open(root, &scopes)?;
-            bound = reader.bound().position;
+            bound = reader.bound().positions.clone();
         }
         let open_only = t.elapsed() / 20;
 
@@ -25,7 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         let full = t.elapsed() / 20;
         println!(
-            "{label}: open+bound {open_only:?} (bound {bound}) | full view {full:?} ({rows} rows)"
+            "{label}: open+bound {open_only:?} (bound {bound:?}) | full view {full:?} ({rows} rows)"
         );
     }
     Ok(())

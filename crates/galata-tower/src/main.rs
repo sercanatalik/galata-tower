@@ -82,7 +82,7 @@ struct Tower {
     /// Whether there is a broker at all, for a browser that connects mid-outage.
     broker: Arc<RwLock<BrokerState>>,
     /// Each kind's durable bound, as the watch last read it.
-    bounds: Arc<RwLock<BTreeMap<String, i64>>>,
+    bounds: Arc<RwLock<tape::Bounds>>,
 }
 
 /// One thing the tower has to say.
@@ -100,12 +100,17 @@ enum Live {
     Tape(TapeMoved),
 }
 
-/// A kind's tape has a new durable bound.
+/// One venue's tape for one kind has a new durable bound.
+///
+/// Per venue, because each venue numbers its own stream: one event per venue
+/// that moved, rather than a kind's whole map re-sent for the browser to diff.
 #[derive(Clone, Debug, Serialize, ToSchema)]
 struct TapeMoved {
     /// Which dataset, as `/v1/tape/{kind}` spells it.
     kind: String,
-    /// The new durable position.
+    /// Whose stream moved.
+    venue: String,
+    /// The new durable position, in that venue's sequence.
     bound: i64,
 }
 
@@ -146,8 +151,8 @@ struct Board {
     /// is: the event says it MOVED, and this says where it STANDS. A browser
     /// connecting into a quiet hour would otherwise learn nothing until the
     /// next move, which may never come.
-    #[schema(value_type = Object)]
-    bounds: BTreeMap<String, i64>,
+    #[schema(inline)]
+    bounds: tape::Bounds,
     /// Every venue seen since the tower started, newest snapshot each.
     venues: Vec<Snapshot>,
 }
@@ -686,12 +691,12 @@ const TAPE_WATCH: Duration = Duration::from_secs(1);
 fn watch_the_record(
     tape: PathBuf,
     status: broadcast::Sender<Live>,
-    bounds: Arc<RwLock<BTreeMap<String, i64>>>,
+    bounds: Arc<RwLock<tape::Bounds>>,
 ) {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(TAPE_WATCH);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let mut last: BTreeMap<String, i64> = BTreeMap::new();
+        let mut last = tape::Bounds::new();
         // Reported on the EDGE. A tape root that is not there is one log line,
         // not one a second for as long as the tower runs.
         let mut said_empty = false;
@@ -732,23 +737,26 @@ fn watch_the_record(
 /// runs against a real tape is a loop whose backwards case is reasoned about
 /// rather than exercised, and the backwards case is the one that would redraw
 /// every chart if it were wrong.
-fn moves(last: &BTreeMap<String, i64>, found: &BTreeMap<String, i64>) -> Vec<TapeMoved> {
+fn moves(last: &tape::Bounds, found: &tape::Bounds) -> Vec<TapeMoved> {
     let mut moved = Vec::new();
-    for (kind, position) in found {
-        match last.get(kind) {
-            // Unchanged. The ordinary case, and it sends nothing.
-            Some(previous) if previous == position => {}
-            // **Backwards is not a move.** It means the store was replaced
-            // underneath the tower, which is worth a line in the log and is
-            // not worth a chart redraw.
-            Some(previous) if previous > position => tracing::warn!(
-                %kind, previous, position,
-                "the tape's bound went backwards; the store was replaced"
-            ),
-            _ => moved.push(TapeMoved {
-                kind: kind.clone(),
-                bound: *position,
-            }),
+    for (kind, venues) in found {
+        for (venue, position) in venues {
+            match last.get(kind).and_then(|seen| seen.get(venue)) {
+                // Unchanged. The ordinary case, and it sends nothing.
+                Some(previous) if previous == position => {}
+                // **Backwards is not a move.** It means the store was replaced
+                // underneath the tower, which is worth a line in the log and is
+                // not worth a chart redraw.
+                Some(previous) if previous > position => tracing::warn!(
+                    %kind, %venue, previous, position,
+                    "the tape's bound went backwards; the store was replaced"
+                ),
+                _ => moved.push(TapeMoved {
+                    kind: kind.clone(),
+                    venue: venue.clone(),
+                    bound: *position,
+                }),
+            }
         }
     }
     moved
@@ -811,7 +819,7 @@ async fn status(
 fn board_event(
     board: &BTreeMap<String, Arc<Snapshot>>,
     broker: BrokerState,
-    bounds: BTreeMap<String, i64>,
+    bounds: tape::Bounds,
 ) -> Event {
     // **The broker's state travels with the venues.** A browser connecting
     // during an outage used to be handed an empty list and nothing else, and
@@ -1141,7 +1149,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (status, _) = broadcast::channel(STATUS_BACKLOG);
     let board = Arc::new(RwLock::new(BTreeMap::new()));
     let broker_state: Arc<RwLock<BrokerState>> = Arc::default();
-    let bounds: Arc<RwLock<BTreeMap<String, i64>>> = Arc::default();
+    let bounds: Arc<RwLock<tape::Bounds>> = Arc::default();
     // Beside the archive by default, which is how datawatch lays them out.
     let tape = std::env::var("GALATA_TAPE").unwrap_or_else(|_| "var/tape".to_owned());
     let tower = Tower {
@@ -1383,15 +1391,25 @@ mod tests {
         assert!(got <= Duration::from_millis(1), "{got:?}");
     }
 
-    fn bounds(pairs: &[(&str, i64)]) -> BTreeMap<String, i64> {
-        pairs.iter().map(|(k, v)| ((*k).to_owned(), *v)).collect()
+    /// `(kind, venue, position)` triples as the watch sees them.
+    fn bounds(triples: &[(&str, &str, i64)]) -> tape::Bounds {
+        let mut out = tape::Bounds::new();
+        for (kind, venue, position) in triples {
+            out.entry((*kind).to_owned())
+                .or_default()
+                .insert((*venue).to_owned(), *position);
+        }
+        out
     }
 
     /// The ordinary case, and the one that must cost nothing: a quiet record
     /// sends no event, so a browser reads no rows.
     #[test]
     fn a_record_that_has_not_moved_says_nothing() {
-        let seen = bounds(&[("quotes", 68286), ("candles", 12)]);
+        let seen = bounds(&[
+            ("quotes", "hyperliquid", 68286),
+            ("candles", "hyperliquid", 12),
+        ]);
         assert!(
             moves(&seen, &seen).is_empty(),
             "an unchanged bound must not wake every open screen"
@@ -1402,9 +1420,13 @@ mod tests {
     /// drawn it.
     #[test]
     fn a_kind_that_appears_is_a_move() {
-        let moved = moves(&BTreeMap::new(), &bounds(&[("quotes", 1)]));
+        let moved = moves(
+            &tape::Bounds::new(),
+            &bounds(&[("quotes", "hyperliquid", 1)]),
+        );
         assert_eq!(moved.len(), 1);
         assert_eq!(moved[0].kind, "quotes");
+        assert_eq!(moved[0].venue, "hyperliquid");
         assert_eq!(moved[0].bound, 1);
     }
 
@@ -1412,18 +1434,40 @@ mod tests {
     #[test]
     fn only_the_kind_that_moved_is_reported() {
         let moved = moves(
-            &bounds(&[("quotes", 10), ("candles", 5)]),
-            &bounds(&[("quotes", 11), ("candles", 5)]),
+            &bounds(&[("quotes", "hyperliquid", 10), ("candles", "hyperliquid", 5)]),
+            &bounds(&[("quotes", "hyperliquid", 11), ("candles", "hyperliquid", 5)]),
         );
         assert_eq!(moved.len(), 1, "{moved:?}");
         assert_eq!(moved[0].kind, "quotes");
+    }
+
+    /// Two venues in one kind move independently, and each says so for itself —
+    /// their positions are in two unrelated numberings.
+    #[test]
+    fn two_venues_moves_are_reported_separately() {
+        let moved = moves(
+            &bounds(&[
+                ("quotes", "hyperliquid", 10),
+                ("quotes", "rh-crypto", 9_000_000),
+            ]),
+            &bounds(&[
+                ("quotes", "hyperliquid", 10),
+                ("quotes", "rh-crypto", 9_000_004),
+            ]),
+        );
+        assert_eq!(moved.len(), 1, "{moved:?}");
+        assert_eq!(moved[0].venue, "rh-crypto");
+        assert_eq!(moved[0].bound, 9_000_004);
     }
 
     /// **Backwards is not a move.** The store was replaced underneath the
     /// tower; that is a log line, not a redraw of every chart.
     #[test]
     fn a_bound_that_went_backwards_is_not_a_move() {
-        let moved = moves(&bounds(&[("quotes", 100)]), &bounds(&[("quotes", 40)]));
+        let moved = moves(
+            &bounds(&[("quotes", "hyperliquid", 100)]),
+            &bounds(&[("quotes", "hyperliquid", 40)]),
+        );
         assert!(
             moved.is_empty(),
             "a store replaced underneath the tower must not read as growth: {moved:?}"
@@ -1435,7 +1479,10 @@ mod tests {
     /// the venue board holds.
     #[test]
     fn a_kind_that_disappears_is_not_reported() {
-        let moved = moves(&bounds(&[("quotes", 10)]), &BTreeMap::new());
+        let moved = moves(
+            &bounds(&[("quotes", "hyperliquid", 10)]),
+            &tape::Bounds::new(),
+        );
         assert!(moved.is_empty(), "{moved:?}");
     }
 
@@ -1448,7 +1495,7 @@ mod tests {
             board_event(
                 &BTreeMap::new(),
                 BrokerState::default(),
-                bounds(&[("quotes", 68286)]),
+                bounds(&[("quotes", "hyperliquid", 68286)]),
             )
         );
         assert!(rendered.contains("bounds"), "{rendered}");
@@ -1462,6 +1509,7 @@ mod tests {
             "{:?}",
             event_for(Ok(Live::Tape(TapeMoved {
                 kind: "quotes".to_owned(),
+                venue: "hyperliquid".to_owned(),
                 bound: 7,
             })))
         );
@@ -1604,7 +1652,15 @@ mod tests {
             tickers.len() >= 6,
             "the tape holds six instruments and nothing here needs a bus to say so: {tickers:?}"
         );
-        assert!(found.bound > 0, "and the durable bound comes with them");
+        assert!(
+            found
+                .bounds
+                .values()
+                .flat_map(|venues| venues.values())
+                .all(|p| *p > 0)
+                && !found.bounds.is_empty(),
+            "and the durable bound comes with them, per kind and venue"
+        );
         // Every row counted stands behind something.
         assert!(found.instruments.iter().all(|i| i.rows > 0));
     }
@@ -1620,7 +1676,7 @@ mod tests {
             found.instruments.is_empty(),
             "a root that is not there is silence, not a refusal"
         );
-        assert_eq!(found.bound, 0);
+        assert!(found.bounds.is_empty());
     }
 
     /// **The case that started this.** A tower pointed at a directory that
