@@ -125,7 +125,7 @@ pub type Bounds = BTreeMap<String, BTreeMap<String, i64>>;
 /// A kind that has written nothing is absent from the map. That is an answer,
 /// not a failure: [`view`] refuses it because a caller asked for ROWS, and this
 /// caller asked whether anything had arrived.
-pub fn bounds(root: &Path) -> Bounds {
+pub fn bounds(root: &Path, labels: &galata_datawatch::tape::LabelCache) -> Bounds {
     let mut found = BTreeMap::new();
     for kind in SERVED {
         let scope = format!("kind={}", kind.as_str());
@@ -136,7 +136,11 @@ pub fn bounds(root: &Path) -> Bounds {
         // A root that is not there, or a store that will not open, is silence
         // here. The caller decides whether silence is worth a log line; doing
         // it here would do it once a second.
-        if let Ok(reader) = galata_datawatch::tape::reader::Reader::open(root, &scopes) {
+        // Through the watch's cache: a label is a footer read, and this runs
+        // every second over a tape that only ever grows.
+        if let Ok(reader) =
+            galata_datawatch::tape::reader::Reader::open_cached(root, &scopes, labels)
+        {
             found.insert(kind.as_str().to_owned(), reader.bound().positions.clone());
         }
     }
@@ -761,6 +765,27 @@ mod tests {
     /// Against the real archive, summing those rows reported 32.6 DAYS missing
     /// from a 32.6-hour window — arithmetic over real data, absurd on its face,
     /// and it would have shipped.
+    /// The watch's cache pays for a footer once. Against the real tape, when
+    /// there is one: a second pass over an unchanged tape reads none.
+    #[test]
+    fn a_quiet_tape_is_watched_without_rereading_footers() {
+        let Some(root) = tape_root() else {
+            eprintln!("SKIPPED: no tape");
+            return;
+        };
+        let labels = galata_datawatch::tape::LabelCache::default();
+        let first = bounds(&root, &labels);
+        let read = labels.footer_reads();
+        assert!(read > 0, "the first pass read no label");
+        let second = bounds(&root, &labels);
+        assert_eq!(
+            labels.footer_reads(),
+            read,
+            "an unchanged tape was read again"
+        );
+        assert_eq!(first, second);
+    }
+
     #[test]
     fn one_interval_written_many_times_counts_once() {
         let outage = (1_789_941_139_190_783, 1_790_058_447_399_168);

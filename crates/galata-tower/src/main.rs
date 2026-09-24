@@ -700,13 +700,32 @@ fn watch_the_record(
         // Reported on the EDGE. A tape root that is not there is one log line,
         // not one a second for as long as the tower runs.
         let mut said_empty = false;
+        // **One label cache for the watch's lifetime.** A bound reads each
+        // segment's venue label from its footer; measured at 25.7 ms per kind
+        // cold against 3.3 ms warm for 1,000 segments. A segment is immutable
+        // once renamed, so a label read once stays read.
+        let labels = Arc::new(galata_datawatch::tape::LabelCache::default());
+        let mut ticks: u64 = 0;
         loop {
             ticker.tick().await;
-            // Off the runtime: this opens files. 53µs is short, but short is
-            // not the same as non-blocking, and five of them share one thread
-            // with every open SSE stream.
+            ticks += 1;
+            // Off the runtime: this opens files. Short is not the same as
+            // non-blocking, and five of them share one thread with every open
+            // SSE stream.
             let root = tape.clone();
-            let Ok(found) = tokio::task::spawn_blocking(move || tape::bounds(&root)).await else {
+            let cache = Arc::clone(&labels);
+            let prune = ticks.is_multiple_of(60);
+            let Ok(found) = tokio::task::spawn_blocking(move || {
+                // Once a minute, forget segments compaction or replacement
+                // removed. It only bounds memory: a removed segment is never
+                // listed, so its entry is never consulted.
+                if prune {
+                    cache.prune();
+                }
+                tape::bounds(&root, &cache)
+            })
+            .await
+            else {
                 continue;
             };
 
@@ -1525,7 +1544,7 @@ mod tests {
     fn a_root_with_no_tape_answers_rather_than_failing() {
         let nowhere = PathBuf::from("/galata-tower-no-such-tape-root");
         assert!(
-            tape::bounds(&nowhere).is_empty(),
+            tape::bounds(&nowhere, &galata_datawatch::tape::LabelCache::default()).is_empty(),
             "a root that is not there must be silence, not a refusal"
         );
     }
