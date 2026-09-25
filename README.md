@@ -31,6 +31,7 @@ capture loop, so it cannot be made to run one.
 
 - [Where it fits in Galata](#where-it-fits-in-galata)
 - [Features](#features)
+- [Screenshots](#screenshots)
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
 - [HTTP API](#http-api)
@@ -101,6 +102,35 @@ The screen does not poll. It refetches a panel only when the server says that
 panel's data has moved (see [Live updates](#live-updates)), and each panel
 shows how long ago its data last advanced, because a current table and an
 hour-old one otherwise look identical.
+
+---
+
+## Screenshots
+
+These are the redesign boards from the
+[galata-tower redesign canvas](https://claude.ai/artifact/9T14pWbfdbE4FWPQ4fFH9y),
+drawn on real data from 25 Sep 2026. They show where the screen is going, not
+what `ui/dist` serves today.
+
+**Overview.** The truth bar, the markets, the datasets per venue, and the
+record's timeline with its gaps by cause.
+
+![Overview](assets/screenshots/overview.png)
+
+**Markets.** One instrument's candles, with the downtime the venue backfilled
+marked on the chart, beside what the record holds and what the venue says live.
+
+![Markets, BTC](assets/screenshots/market.png)
+
+**Record.** Partitions by kind and day, gaps by cause, parse failures, and rows
+per hour.
+
+![Record](assets/screenshots/record.png)
+
+**States.** The truth bar when each fact fails, and the four states every panel
+can be in.
+
+![States the tower can be in](assets/screenshots/states.png)
 
 ---
 
