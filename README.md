@@ -107,11 +107,6 @@ hour-old one otherwise look identical.
 
 ## Screenshots
 
-These are the redesign boards from the
-[galata-tower redesign canvas](https://claude.ai/artifact/9T14pWbfdbE4FWPQ4fFH9y),
-drawn on real data from 25 Sep 2026. They show where the screen is going, not
-what `ui/dist` serves today.
-
 **Overview.** The truth bar, the markets, the datasets per venue, and the
 record's timeline with its gaps by cause.
 
