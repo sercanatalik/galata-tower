@@ -3,6 +3,7 @@ import TruthBar from './app/TruthBar'
 import Boundary from './Boundary'
 import { useFollowTheArchive, useFollowTheRecord, useLiveStatus } from './live/status'
 import Markets from './views/Markets'
+import Portfolio from './views/Portfolio'
 import Overview from './views/Overview'
 import Record from './views/Record'
 
@@ -27,6 +28,7 @@ export default function App() {
   const views = [
     { view: 'overview', name: 'Overview', to: href({ view: 'overview' }) },
     { view: 'markets', name: 'Markets', to: '#/m' },
+    { view: 'portfolio', name: 'Portfolio', to: href({ view: 'portfolio' }) },
     { view: 'record', name: 'Record', to: href({ view: 'record' }) },
   ] as const
 
@@ -54,6 +56,7 @@ export default function App() {
         </Boundary>
         {route.view === 'overview' ? <Overview /> : null}
         {route.view === 'markets' ? <Markets venue={route.venue} ticker={route.ticker} /> : null}
+        {route.view === 'portfolio' ? <Portfolio /> : null}
         {route.view === 'record' ? <Record /> : null}
       </main>
     </>

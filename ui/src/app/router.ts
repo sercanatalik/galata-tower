@@ -5,11 +5,13 @@ export type Route =
   | { view: 'overview' }
   | { view: 'markets'; venue: string | null; ticker: string | null }
   | { view: 'record' }
+  | { view: 'portfolio' }
 
 /** A fragment as a route. Anything unrecognised is the Overview. */
 export function parse(hash: string): Route {
   const parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean).map(decodeURIComponent)
   if (parts[0] === 'record') return { view: 'record' }
+  if (parts[0] === 'portfolio') return { view: 'portfolio' }
   if (parts[0] === 'm') return { view: 'markets', venue: parts[1] ?? null, ticker: parts[2] ?? null }
   return { view: 'overview' }
 }
@@ -21,6 +23,8 @@ export function href(route: Route): string {
       return '#/'
     case 'record':
       return '#/record'
+    case 'portfolio':
+      return '#/portfolio'
     case 'markets':
       return route.venue && route.ticker
         ? `#/m/${encodeURIComponent(route.venue)}/${encodeURIComponent(route.ticker)}`

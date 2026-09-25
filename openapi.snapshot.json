@@ -360,6 +360,36 @@
         }
       }
     },
+    "/v1/portfolio": {
+      "get": {
+        "summary": "The ledger's fold report for a venue, passed through as the ledger wrote it.",
+        "description": "Accounts by alias only: the tower never reads the ledger's root, holds no\naddress and no key. An absent report is an empty state, not an error.",
+        "operationId": "portfolio_report",
+        "parameters": [
+          {
+            "name": "venue",
+            "in": "query",
+            "description": "The venue.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The fold report and its age, or why there is none",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Portfolio"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/rates": {
       "get": {
         "summary": "How many rows the record holds, by hour.",
@@ -387,6 +417,106 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Rates"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/statistics": {
+      "get": {
+        "summary": "Volatility, correlation and beta derived from the tape on request, each\nwith its n and backfilled share. The floor and z have no defaults.",
+        "operationId": "statistics",
+        "parameters": [
+          {
+            "name": "venue",
+            "in": "query",
+            "description": "The venue.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "horizon",
+            "in": "query",
+            "description": "The bucket, spelled as a bar width: `30m`, `1h`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Start of the window, venue time, microseconds.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "End, exclusive.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "min_observations",
+            "in": "query",
+            "description": "Returns a cell needs before it is a figure.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "z",
+            "in": "query",
+            "description": "Standard errors the interval on ρ spans.",
+            "required": true,
+            "schema": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          {
+            "name": "reference",
+            "in": "query",
+            "description": "The instrument betas are taken against.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The derivation, with the tape bound it read to",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Derived"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A missing floor or z, an unknown horizon, or a window that runs backwards",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -1034,6 +1164,19 @@
           }
         }
       },
+      "Derived": {
+        "type": "object",
+        "description": "The statistics, as the library derived them: every cell with its n and\nbackfilled share, absent cells naming why, and the tape bound read to.",
+        "required": [
+          "derived"
+        ],
+        "properties": {
+          "derived": {
+            "type": "object",
+            "description": "`galata_datawatch::derive::tape::Derived`, verbatim."
+          }
+        }
+      },
       "Failing": {
         "type": "object",
         "description": "One kind of failure, and how much of it.",
@@ -1362,6 +1505,34 @@
             "type": "integer",
             "description": "How many segments it holds now. Counted on every read, since an open day grows.",
             "minimum": 0
+          }
+        }
+      },
+      "Portfolio": {
+        "type": "object",
+        "description": "The ledger's fold report for one venue, as the ledger wrote it.",
+        "required": [
+          "report"
+        ],
+        "properties": {
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why there is no report, where there is none."
+          },
+          "report": {
+            "type": "object",
+            "description": "The report, verbatim: accounts by alias, books, breaks, skews, snapshot\nchecks, cash per dex, and why there is no equity. Absent when the\nledger has not written one."
+          },
+          "written_micros": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When the file was written, our clock. Its age is shown beside it."
           }
         }
       },

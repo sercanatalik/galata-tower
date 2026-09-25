@@ -96,7 +96,10 @@ pub fn archive_segments_on(root: &Path, date: &str) -> BTreeMap<(String, String)
         for (kind, kind_dir) in levels(&venue_dir, "kind=") {
             let day = kind_dir.join(format!("date={date}"));
             if day.is_dir() {
-                out.insert((venue.clone(), kind), galata_segments::list_segments(&day).len());
+                out.insert(
+                    (venue.clone(), kind),
+                    galata_segments::list_segments(&day).len(),
+                );
             }
         }
     }
@@ -158,7 +161,11 @@ fn levels(dir: &Path, prefix: &str) -> Vec<(String, PathBuf)> {
 }
 
 /// Every row of one tape dataset, or none when the dataset is unwritten.
-fn read_kind(root: &Path, kind: Kind, ticker: Option<String>) -> Result<Vec<RecordBatch>, TapeError> {
+fn read_kind(
+    root: &Path,
+    kind: Kind,
+    ticker: Option<String>,
+) -> Result<Vec<RecordBatch>, TapeError> {
     let scope = format!("kind={}", kind.as_str());
     let scopes = [scope.as_str()];
     if !galata_datawatch::tape::reader::unwritten(root, &scopes).is_empty() {
@@ -167,8 +174,8 @@ fn read_kind(root: &Path, kind: Kind, ticker: Option<String>) -> Result<Vec<Reco
     let unreadable = |error: &dyn std::fmt::Display| TapeError::Unreadable {
         detail: error.to_string(),
     };
-    let reader = galata_datawatch::tape::reader::Reader::open(root, &scopes)
-        .map_err(|e| unreadable(&e))?;
+    let reader =
+        galata_datawatch::tape::reader::Reader::open(root, &scopes).map_err(|e| unreadable(&e))?;
     reader
         .view(galata_datawatch::tape::reader::Window {
             kind,
@@ -191,7 +198,11 @@ fn dec<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a Decimal128Array, Ta
     column(batch, name, "Decimal128")
 }
 
-fn column<'a, T: 'static>(batch: &'a RecordBatch, name: &str, want: &str) -> Result<&'a T, TapeError> {
+fn column<'a, T: 'static>(
+    batch: &'a RecordBatch,
+    name: &str,
+    want: &str,
+) -> Result<&'a T, TapeError> {
     batch
         .column_by_name(name)
         .and_then(|c| c.as_any().downcast_ref::<T>())
@@ -344,7 +355,10 @@ pub fn timeline(tape_root: &Path, archive_root: &Path) -> Result<Timeline, TapeE
                 .map(|at| runs(at, BACKFILL_JOIN_MICROS))
                 .unwrap_or_default();
             let archive_only = match (newest, archive.get(&venue)) {
-                (Some(tape), Some(&arch)) if arch > tape => Some(Span { from: tape, to: arch }),
+                (Some(tape), Some(&arch)) if arch > tape => Some(Span {
+                    from: tape,
+                    to: arch,
+                }),
                 _ => None,
             };
             Lane {
@@ -594,7 +608,12 @@ pub fn fixed(raw: i128, scale: i8) -> String {
     let sign = if raw < 0 { "-" } else { "" };
     let abs = raw.unsigned_abs();
     let unit = unit as u128;
-    format!("{sign}{}.{:0width$}", abs / unit, abs % unit, width = scale as usize)
+    format!(
+        "{sign}{}.{:0width$}",
+        abs / unit,
+        abs % unit,
+        width = scale as usize
+    )
 }
 
 /// One `(venue, dataset)` cell of the Overview board.
@@ -698,7 +717,10 @@ mod tests {
     #[test]
     fn runs_break_where_receipts_are_far_apart() {
         let r = runs(vec![0, 10, 20, 200, 210], 60);
-        assert_eq!(r, vec![Span { from: 0, to: 20 }, Span { from: 200, to: 210 }]);
+        assert_eq!(
+            r,
+            vec![Span { from: 0, to: 20 }, Span { from: 200, to: 210 }]
+        );
     }
 
     #[test]
@@ -715,11 +737,29 @@ mod tests {
     #[test]
     fn fifteen_minutes_resample_to_one_bar() {
         let m = 60_000_000;
-        let minutes = (0..15).map(|i| minute(i * m, 100 + i as i128, 110 + i as i128, 90 - i as i128, 101 + i as i128, 2));
+        let minutes = (0..15).map(|i| {
+            minute(
+                i * m,
+                100 + i as i128,
+                110 + i as i128,
+                90 - i as i128,
+                101 + i as i128,
+                2,
+            )
+        });
         let bars = resample(minutes, 15 * m, 0);
         assert_eq!(bars.len(), 1);
         let b = &bars[0];
-        assert_eq!((b.open.as_str(), b.high.as_str(), b.low.as_str(), b.close.as_str(), b.volume.as_str()), ("100", "124", "76", "115", "30"));
+        assert_eq!(
+            (
+                b.open.as_str(),
+                b.high.as_str(),
+                b.low.as_str(),
+                b.close.as_str(),
+                b.volume.as_str()
+            ),
+            ("100", "124", "76", "115", "30")
+        );
         assert!(!b.backfilled);
     }
 
@@ -734,7 +774,10 @@ mod tests {
 
     #[test]
     fn decimals_are_spelled_at_their_scale() {
-        assert_eq!(fixed(85_398_000_000_000_000_000_000, 18), "85398.000000000000000000");
+        assert_eq!(
+            fixed(85_398_000_000_000_000_000_000, 18),
+            "85398.000000000000000000"
+        );
         assert_eq!(fixed(-5, 2), "-0.05");
         assert_eq!(fixed(7, 0), "7");
     }

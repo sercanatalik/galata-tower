@@ -82,12 +82,13 @@ The full framework architecture and roadmap are in the
 
 ## Features
 
-Three views, each headed by the **truth bar**. The bar states four facts the tower can vouch for: the archive is readable, the tape is well-formed, the bus is connected, and each capture is live. It also shows how far the tape trails the archive, per venue, whenever that is more than a minute. Amber appears there and nowhere else. The record itself is never colour-judged.
+Four views, each headed by the **truth bar**. The bar states four facts the tower can vouch for: the archive is readable, the tape is well-formed, the bus is connected, and each capture is live. It also shows how far the tape trails the archive, per venue, whenever that is more than a minute. Amber appears there and nowhere else. The record itself is never colour-judged.
 
 | View | What it shows |
 |---|---|
 | **Overview** `#/` | a tile per instrument (price from the archive's tail, change and sparkline from the tape), a venue × dataset board, and a timeline of held rows, gaps by cause, backfilled spans, and what the archive holds that the tape does not yet |
 | **Markets** `#/m/<venue>/<ticker>` | the instruments, the current price and spread, a `lightweight-charts` candle chart at 1m/5m/15m/1h with volume and hatched backfill spans, the record's facts, the venue's live facts and the newest tape quotes |
+| **Portfolio** `#/portfolio` | positions from the ledger's fold marked at the archive's latest price, the ρ matrix, σ and β from the tape with each cell's n and backfilled share, and VaR and risk share labelled modelled — over hypothetical sizes, kept in the browser, when no position is held |
 | **Record** `#/record` | segments per kind and day (open, closed and holding, or compacted), rows per hour per venue, gaps by cause, parse failures and the roots |
 
 One `<Panel>` renders every read's four states: refused, reading, empty and ready. Each section sits in its own error boundary.
@@ -178,6 +179,7 @@ All configuration is through environment variables:
 | `GALATA_TOWER_LISTEN` | `127.0.0.1:8777` | the address to serve on |
 | `GALATA_BROKER` | `127.0.0.1:4222` | the NATS server that carries `status.>` |
 | `GALATA_CONFIG` | `config/datawatch.toml` | the datawatch configuration, read for each venue's normaliser so `/v1/latest` can decode the archive's tail |
+| `GALATA_STATUS` | `../galata-datawatch/var/status` | where the ledger writes `ledger-fold-<venue>.json`, which `/v1/portfolio` passes through; the tower never reads the ledger's own root |
 
 Both addresses default to loopback. Serving other machines, and reaching
 another machine's bus, are deployment decisions, made by setting these
@@ -209,6 +211,8 @@ datasets:
   GET /v1/timeline     each venue and dataset as intervals: held, gaps by cause, backfilled, archive-only
   GET /v1/candles      one instrument's candles, folded and resampled on the server
   GET /v1/board        tape rows, archive segments today, coverage and gap rows per venue and dataset
+  GET /v1/portfolio    the ledger's fold report for a venue, as the ledger wrote it: accounts by alias, books, checks, cash
+  GET /v1/statistics   volatility, correlation and beta derived from the tape on request; the floor and z are required
 ```
 
 - **Decimals are sent as strings.** Every price and size in the tape is

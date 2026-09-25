@@ -227,6 +227,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/portfolio": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The ledger's fold report for a venue, passed through as the ledger wrote it.
+         * @description Accounts by alias only: the tower never reads the ledger's root, holds no
+         *     address and no key. An absent report is an empty state, not an error.
+         */
+        get: operations["portfolio_report"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/rates": {
         parameters: {
             query?: never;
@@ -247,6 +268,26 @@ export interface paths {
          *     can read.
          */
         get: operations["rates"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/statistics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Volatility, correlation and beta derived from the tape on request, each
+         *     with its n and backfilled share. The floor and z have no defaults.
+         */
+        get: operations["statistics"];
         put?: never;
         post?: never;
         delete?: never;
@@ -628,6 +669,14 @@ export interface components {
              */
             window_to_micros: number;
         };
+        /**
+         * @description The statistics, as the library derived them: every cell with its n and
+         *     backfilled share, absent cells naming why, and the tape bound read to.
+         */
+        Derived: {
+            /** @description `galata_datawatch::derive::tape::Derived`, verbatim. */
+            derived: Record<string, never>;
+        };
         /** @description One kind of failure, and how much of it. */
         Failing: {
             /** @description The channel the payload arrived on. */
@@ -809,6 +858,22 @@ export interface components {
             path: string;
             /** @description How many segments it holds now. Counted on every read, since an open day grows. */
             segments: number;
+        };
+        /** @description The ledger's fold report for one venue, as the ledger wrote it. */
+        Portfolio: {
+            /** @description Why there is no report, where there is none. */
+            reason?: string | null;
+            /**
+             * @description The report, verbatim: accounts by alias, books, breaks, skews, snapshot
+             *     checks, cash per dex, and why there is no equity. Absent when the
+             *     ledger has not written one.
+             */
+            report: Record<string, never>;
+            /**
+             * Format: int64
+             * @description When the file was written, our clock. Its age is shown beside it.
+             */
+            written_micros?: number | null;
         };
         /** @description One instrument's newest quote and trade. Prices and sizes are decimal strings. */
         Price: {
@@ -1302,6 +1367,29 @@ export interface operations {
             };
         };
     };
+    portfolio_report: {
+        parameters: {
+            query: {
+                /** @description The venue. */
+                venue: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The fold report and its age, or why there is none */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Portfolio"];
+                };
+            };
+        };
+    };
     rates: {
         parameters: {
             query?: {
@@ -1324,6 +1412,50 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Rates"];
+                };
+            };
+        };
+    };
+    statistics: {
+        parameters: {
+            query: {
+                /** @description The venue. */
+                venue: string;
+                /** @description The bucket, spelled as a bar width: `30m`, `1h`. */
+                horizon: string;
+                /** @description Start of the window, venue time, microseconds. */
+                from: number;
+                /** @description End, exclusive. */
+                to: number;
+                /** @description Returns a cell needs before it is a figure. */
+                min_observations: number;
+                /** @description Standard errors the interval on ρ spans. */
+                z: number;
+                /** @description The instrument betas are taken against. */
+                reference?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The derivation, with the tape bound it read to */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Derived"];
+                };
+            };
+            /** @description A missing floor or z, an unknown horizon, or a window that runs backwards */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
                 };
             };
         };

@@ -89,7 +89,11 @@ impl Normalisers {
                         name.clone(),
                         Venue {
                             adapter,
-                            tickers: declared.instruments.iter().map(|i| i.ticker.clone()).collect(),
+                            tickers: declared
+                                .instruments
+                                .iter()
+                                .map(|i| i.ticker.clone())
+                                .collect(),
                         },
                     );
                 }
@@ -220,7 +224,8 @@ fn read_window(
     let trades = format!("venue={name}/kind=trades");
     let scopes = [quotes.as_str(), trades.as_str()];
     let from = edge - window.as_micros() as i64;
-    let Ok(payloads) = galata_datawatch::replay::read_range(archive, Some(&scopes), from, edge + 1) else {
+    let Ok(payloads) = galata_datawatch::replay::read_range(archive, Some(&scopes), from, edge + 1)
+    else {
         return BTreeMap::new();
     };
     let mut out: BTreeMap<String, Price> = BTreeMap::new();

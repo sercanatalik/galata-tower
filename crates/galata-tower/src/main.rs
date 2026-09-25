@@ -11,6 +11,7 @@
 
 mod failures;
 mod latest;
+mod portfolio;
 mod shape;
 mod tape;
 
@@ -62,6 +63,9 @@ struct Tower {
     archive: PathBuf,
     /// The tape root: `var/tape` beside it.
     tape: PathBuf,
+    /// Where the ledger writes its reports: `ledger-fold-<venue>.json`.
+    /// Read, never written, and never the ledger's own root.
+    reports: PathBuf,
     /// One subscription's traffic, fanned to every connected screen.
     ///
     /// Two kinds of thing on one channel, which is the shape the predecessor's
@@ -392,16 +396,16 @@ async fn partitions(State(tower): State<Tower>) -> Response {
 fn refuse_root(root: &std::path::Path, why: &str) -> Response {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        format!("the archive root {} could not be listed: {why}", root.display()),
+        format!(
+            "the archive root {} could not be listed: {why}",
+            root.display()
+        ),
     )
         .into_response()
 }
 
 /// The partition listing, walked again only when a partition directory may have appeared or gone.
-fn cached_partitions(
-    root: &std::path::Path,
-    listing: &Listing,
-) -> Vec<PathBuf> {
+fn cached_partitions(root: &std::path::Path, listing: &Listing) -> Vec<PathBuf> {
     let stamp = stamp_of(root);
     let mut held = listing.lock().unwrap_or_else(|p| p.into_inner());
     if let Some((seen, found)) = held.as_ref()
@@ -1342,7 +1346,11 @@ async fn candles(State(tower): State<Tower>, Query(query): Query<CandleQuery>) -
     let Some(interval) = shape::Interval::parse(&query.interval) else {
         return (
             StatusCode::BAD_REQUEST,
-            format!("{} is not an interval; ask for one of {}", query.interval, shape::Interval::NAMES),
+            format!(
+                "{} is not an interval; ask for one of {}",
+                query.interval,
+                shape::Interval::NAMES
+            ),
         )
             .into_response();
     };
@@ -1384,6 +1392,52 @@ async fn board(State(tower): State<Tower>) -> Response {
     }
 }
 
+/// The ledger's fold report for a venue, passed through as the ledger wrote it.
+///
+/// Accounts by alias only: the tower never reads the ledger's root, holds no
+/// address and no key. An absent report is an empty state, not an error.
+#[utoipa::path(
+    get,
+    path = "/v1/portfolio",
+    params(portfolio::PortfolioQuery),
+    responses(
+        (status = 200, description = "The fold report and its age, or why there is none", body = portfolio::Portfolio),
+    ),
+)]
+async fn portfolio_report(
+    State(tower): State<Tower>,
+    Query(query): Query<portfolio::PortfolioQuery>,
+) -> Response {
+    let dir = tower.reports.clone();
+    match tokio::task::spawn_blocking(move || portfolio::read_report(&dir, &query.venue)).await {
+        Ok(found) => Json(found).into_response(),
+        Err(join) => unfinished(join),
+    }
+}
+
+/// Volatility, correlation and beta derived from the tape on request, each
+/// with its n and backfilled share. The floor and z have no defaults.
+#[utoipa::path(
+    get,
+    path = "/v1/statistics",
+    params(portfolio::StatisticsQuery),
+    responses(
+        (status = 200, description = "The derivation, with the tape bound it read to", body = portfolio::Derived),
+        (status = 400, description = "A missing floor or z, an unknown horizon, or a window that runs backwards", body = String),
+    ),
+)]
+async fn statistics(
+    State(tower): State<Tower>,
+    Query(query): Query<portfolio::StatisticsQuery>,
+) -> Response {
+    let tape = tower.tape.clone();
+    match tokio::task::spawn_blocking(move || portfolio::derive(&tape, &query)).await {
+        Ok(Ok(found)) => Json(found).into_response(),
+        Ok(Err(refusal)) => (StatusCode::BAD_REQUEST, refusal).into_response(),
+        Err(join) => unfinished(join),
+    }
+}
+
 /// A read that panicked or was cancelled.
 fn unfinished(join: tokio::task::JoinError) -> Response {
     (
@@ -1400,7 +1454,17 @@ fn unfinished(join: tokio::task::JoinError) -> Response {
         title = "galata-tower",
         description = "A read API over the galata-datawatch record. It watches the record, not the worker.",
     ),
-    components(schemas(About, Root, Partition, Overdue, Board, BrokerState, TapeMoved, ArchiveMoved, VenueFrontier))
+    components(schemas(
+        About,
+        Root,
+        Partition,
+        Overdue,
+        Board,
+        BrokerState,
+        TapeMoved,
+        ArchiveMoved,
+        VenueFrontier
+    ))
 )]
 struct Contract;
 
@@ -1424,6 +1488,8 @@ fn router(tower: Tower) -> (Router, utoipa::openapi::OpenApi) {
         .routes(routes!(timeline))
         .routes(routes!(candles))
         .routes(routes!(board))
+        .routes(routes!(portfolio_report))
+        .routes(routes!(statistics))
         .with_state(tower)
         .split_for_parts()
 }
@@ -1438,6 +1504,7 @@ fn dump_openapi() -> Result<String, Box<dyn std::error::Error>> {
     let (_, api) = router(Tower {
         archive: PathBuf::from("."),
         tape: PathBuf::from("."),
+        reports: PathBuf::from("."),
         status,
         board: Arc::new(RwLock::new(BTreeMap::new())),
         broker: Arc::default(),
@@ -1475,9 +1542,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bounds: Arc<RwLock<tape::Bounds>> = Arc::default();
     // Beside the archive by default, which is how datawatch lays them out.
     let tape = std::env::var("GALATA_TAPE").unwrap_or_else(|_| "var/tape".to_owned());
+    // The ledger's reports, beside capture's status files. From the tower's
+    // own directory, which is where run-service.sh starts it.
+    let reports = std::env::var("GALATA_STATUS")
+        .unwrap_or_else(|_| "../galata-datawatch/var/status".to_owned());
     let tower = Tower {
         archive: PathBuf::from(archive),
         tape: PathBuf::from(tape),
+        reports: PathBuf::from(reports),
         status: status.clone(),
         board: Arc::clone(&board),
         broker: Arc::clone(&broker_state),
