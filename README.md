@@ -11,32 +11,152 @@
 [![Built with axum](https://img.shields.io/badge/server-axum%200.8-000000.svg)](https://github.com/tokio-rs/axum)
 [![React 19](https://img.shields.io/badge/screen-React%2019-149eca.svg)](https://react.dev)
 
-The market-data screen for
-[galata-datawatch](https://github.com/sercanatalik/galata-datawatch), in one
-binary: an axum read API over the record, and the React app it serves.
+**The operator UI for Galata's market data: an axum read API over the record
+and the React app it serves, in one binary.**
 
-**It watches the record, not the worker** — and this binary links no capture
-loop, so it cannot be made to run one.
+galata-tower shows what
+[galata-datawatch](https://github.com/sercanatalik/galata-datawatch) has
+captured: partitions, coverage, gaps, parse failures, ingest rates, every
+instrument, a live tape, and each venue's own status. It answers from the
+files on disk, not from what a capture process says about itself. It links no
+capture loop, so it cannot be made to run one.
 
-| | |
-|---|---|
-| **The record** | partitions, overdue compaction, and the archive root it reads |
-| **The tape** | quotes, trades, candles, funding, marks and gaps, capped and newest-first |
-| **The gaps** | what the record says is missing and why, by cause, unioned rather than summed |
-| **The instruments** | every one the record holds, with its age and row count — and no broker needed to say so |
-| **Live status** | every venue's own account of itself, over SSE, level-triggered |
-| **The screen** | embedded at compile time, so a deployment runs no node process |
+> **Status: 0.x.** The architecture is settled: the dependency wall, the
+> generated contract, and what the tower is allowed to know. What it shows
+> will keep growing.
 
-> **0.x.** The shape is settled — the dependency wall, the generated contract,
-> and what the tower is allowed to know. What moves is what is shown.
+---
 
-## It watches the record, not the worker
+## Contents
 
-A heartbeat is a claim. A closed partition still holding 1,412 segments is a
-fact on disk. Every route answers from `galata-segments`' own listing rather
-than from anything a capture process says about itself:
+- [Where it fits in Galata](#where-it-fits-in-galata)
+- [Features](#features)
+- [Quick start](#quick-start)
+- [Configuration](#configuration)
+- [HTTP API](#http-api)
+- [Architecture](#architecture)
+- [Development](#development)
+- [Roadmap](#roadmap)
+- [Licence](#licence)
 
+---
+
+## Where it fits in Galata
+
+Galata is a low-latency algorithmic trading framework in Rust. It covers
+multi-venue market data capture, signal generation, deterministic portfolio
+risk controls, and agentic strategy execution driven by a fine-tuned decision
+model. The tower is the operator's window onto it.
+
+```mermaid
+flowchart LR
+    CAP["galata-datawatch<br/>capture, one per venue"]
+    ARC[("archive<br/>the record")]
+    TAPE[("tape<br/>Parquet cache")]
+    NATS{{"NATS"}}
+
+    subgraph TOWER["galata-tower (one binary)"]
+        API["axum read API<br/>/v1/*"]
+        UI["React screen<br/>embedded at compile time"]
+    end
+
+    CAP --> ARC -- galata-tape-rebuild --> TAPE
+    CAP -- "status.<venue>" --> NATS
+    ARC -- segment listings --> API
+    TAPE -- bounded reads --> API
+    NATS -- "status.> only" --> API
+    API -- JSON + SSE --> UI
 ```
+
+| It reads | Through | Never |
+|---|---|---|
+| the archive | `galata-segments` listings and the record's own datasets | writes, compacts or deletes |
+| the tape | the bounded reader in `galata-datawatch`, with `default-features = false` | links a venue transport |
+| the bus | `status.>` via `galata-broker`, with the `reader` identity | subscribes to `markets.>` |
+
+The full framework architecture and roadmap are in the
+[galata-datawatch README](https://github.com/sercanatalik/galata-datawatch#galata-at-a-glance).
+
+---
+
+## Features
+
+| Panel | What it shows |
+|---|---|
+| **Live** | every venue's own account of itself and the broker's reachability, streamed over SSE |
+| **Instruments** | every instrument the record holds, with its age and row count; no broker needed |
+| **Partitions** | the partitions the record holds |
+| **Closed, still holding** | closed days that still hold more segments than compaction would leave |
+| **Candles** | charts over the tape's candles, drawn with `lightweight-charts` |
+| **Gaps** | what the record says is missing, and why, by cause; overlapping gaps are unioned, not summed |
+| **Failures** | payloads the record could not parse, grouped by error |
+| **Coverage** | how much of each day the record holds, by dataset |
+| **Rates** | rows per venue, dataset and hour |
+| **Tape** | quotes, trades, candles, funding, marks and gaps, capped and newest first, with how far each venue is durable |
+
+Each panel sits in its own error boundary, so one panel failing to render
+says so in place and leaves the others working.
+
+The screen does not poll. It refetches a panel only when the server says that
+panel's data has moved (see [Live updates](#live-updates)), and each panel
+shows how long ago its data last advanced, because a current table and an
+hour-old one otherwise look identical.
+
+---
+
+## Quick start
+
+Requirements: Rust 1.98 (pinned by `rust-toolchain.toml`), and a checkout of
+[galata-datawatch](https://github.com/sercanatalik/galata-datawatch) beside
+this one. Node and pnpm are only needed to change the screen.
+
+```sh
+git clone https://github.com/sercanatalik/galata-datawatch
+git clone https://github.com/sercanatalik/galata-tower
+cd galata-tower
+
+GALATA_ARCHIVE=../galata-datawatch/var/archive cargo run --release
+# open http://127.0.0.1:8777
+```
+
+**The datawatch crates are path dependencies** until they are published to
+crates.io, so the sibling checkout is required to build. After galata-datawatch
+0.1.0 they become registry dependencies. `scripts/check-against-tarballs.sh`
+already builds the tower against the packaged crates, to prove that switch
+will work.
+
+**The tower starts whether or not a broker answers.** The record is a fact on
+disk and needs no bus to be true, so a refused connection is reported on the
+screen and the record is still served.
+
+---
+
+## Configuration
+
+All configuration is through environment variables:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `GALATA_ARCHIVE` | `var/archive` | the datawatch archive root, e.g. `../galata-datawatch/var/archive` |
+| `GALATA_TAPE` | `var/tape` | the tape root, which `galata-tape-rebuild` writes beside the archive |
+| `GALATA_TOWER_LISTEN` | `127.0.0.1:8777` | the address to serve on |
+| `GALATA_BROKER` | `127.0.0.1:4222` | the NATS server that carries `status.>` |
+
+Both addresses default to loopback. Serving other machines, and reaching
+another machine's bus, are deployment decisions, made by setting these
+variables rather than assumed by the binary. In the reference deployment the
+tower runs as the launchd agent `com.galata.tower`, installed by
+galata-datawatch's `scripts/install-services.sh`, and reads its broker
+password from galata-vault through a token minted for it alone.
+
+---
+
+## HTTP API
+
+Every route answers from `galata-segments`' own listings and the record's
+datasets:
+
+```text
   GET /v1/about        the archive root, and the tape columns a read can prune on
   GET /v1/partitions   the partitions the record holds
   GET /v1/overdue      closed days still holding more segments than compaction left
@@ -50,153 +170,105 @@ than from anything a capture process says about itself:
   GET /v1/tape/{kind}  a window of one dataset, bounded by what is durable
 ```
 
-**A decimal crosses as a string.** Every price and size in the tape is
-`Decimal128(38, 18)`, and the tape route sends them quoted — `"80770.000000..."`,
-not `80770.0`. Sent as JSON numbers they would be doubles before the browser
-could decline to round them, and `check-no-float-money.sh` could not see it,
-because nothing would have converted anything. `arrow-json`'s writer emits them
-unquoted, which is why this tower serialises the rows itself.
+- **Decimals are sent as strings.** Every price and size in the tape is
+  `Decimal128(38, 18)` and is sent quoted (`"80770.000000..."`, not
+  `80770.0`). As JSON numbers they would become doubles before the browser
+  could refuse to round them. `arrow-json` writes them unquoted, which is why
+  the tower serialises rows itself.
+- **`/v1/overdue` reports and does not judge.** How many segments count as
+  too many is the operator's threshold.
+- The OpenAPI document is [`openapi.snapshot.json`](openapi.snapshot.json),
+  and `galata-tower --dump-openapi` prints it from the serving binary.
 
-`scripts/check-documented-routes.sh` holds that list to the contract, in both
-directions: a route added without a line here fails, and so does a line for a
-route that is not served.
+---
 
-`/v1/overdue` reports and does not judge. What counts as too many segments is
-the operator's threshold, not a number this binary has an opinion about.
+## Architecture
 
-## The wall
+```text
+  crates/galata-tower/   the server: axum, utoipa, rust-embed
+  ui/                    the React app; ui/dist is embedded at compile time
+  openapi.snapshot.json  the API contract, generated and committed
+  scripts/               the guards; check-all.sh runs them all
+```
 
-This tree links **no capture loop**, and that is checked rather than claimed:
+### It watches the record, not the worker
+
+A heartbeat is a claim. A closed partition still holding 1,412 segments is a
+fact on disk. The tower reports facts from the store and leaves judgement to
+the operator.
+
+### The dependency wall
+
+The tower links **no capture loop**, and a guard checks it rather than a
+comment claiming it:
 
 ```sh
 ./scripts/check-no-capture-loop.sh
 ```
 
-`galata-datawatch` is taken with `default-features = false`, which is one word
-in a manifest and **85 crates** in the tree — 168 against 253, measured here.
-The guard asserts exactly that: `cargo tree -e features` names
-`galata-datawatch feature "capture"` when it is on, and the guard greps for it,
-so the rule is checked rather than approximated.
+`galata-datawatch` is taken with `default-features = false`. That one setting
+removes **85 crates** from the tree (168 against 253, measured). The guard
+reads `cargo tree -e features` and fails if the `capture` feature appears.
 
-**The rule is not "no async" — it is "nothing that exists to talk to a venue".**
-`tokio`, `hyper` and `hyper-util` are here and are fine: they are axum's, and a
-server needs a server. So is `rustls`, once `galata-broker` arrives, because
-NATS runs over TLS and TLS exists to talk to anything. This guard forbade it
-until 2026-09-22 for a reason its own header said was not the rule; the list now
-names the venue transports — `tokio-tungstenite`, `tungstenite`, `reqwest` — as
-a second net for one added directly, since that leaves the feature off.
+**The rule is "nothing that exists to talk to a venue", not "no async".**
+`tokio`, `hyper` and `hyper-util` belong to axum. `rustls` arrives with
+`galata-broker`, because NATS runs over TLS. The venue transports
+(`tokio-tungstenite`, `tungstenite`, `reqwest`) are named as a second net, in
+case one is added to the manifest directly. Both failure modes have been
+planted and seen to fail.
 
-Both halves are watched failing: turning the feature on, and adding a transport
-to the manifest. Verified with `galata-broker` present — 243 crates, `rustls`
-among them, guard green — and still red if the capture feature is on beside it,
-so the broker is not a hole.
+`scripts/check-no-market-reach.sh` holds the other boundary: the tower
+subscribes to `status.>` and nothing under `markets.`. A process that serves
+a web page holds its broker password in its environment, and an identity that
+can read every venue's firehose is not what an operator's laptop should
+carry. The broker's grant enforces this on the server, and the guard fails a
+subscription written here, rather than letting someone fix it by widening the
+grant.
 
-## The contract is generated, not written
+### The contract is generated, not written
 
 ```sh
 ./scripts/check-contract-drift.sh            # is the committed document what the code serves?
 ./scripts/check-contract-drift.sh --write    # refresh it, and the screen's types with it
 ```
 
-`utoipa` derives the schemas from the response types and `utoipa-axum` derives
-the paths from the routes, so a route is declared once. The binary that serves
-them prints the document — `galata-tower --dump-openapi` — and
-`openapi.snapshot.json` is committed as the reviewed authority.
-`ui/src/contract/api.d.ts` is generated from that snapshot and committed too,
-so the screen's types and the server's have one source rather than two that
-agree by inspection.
+`utoipa` derives the schemas from the response types and `utoipa-axum`
+derives the paths from the routes, so each route is declared once. The
+serving binary prints the document, which is committed as the reviewed
+authority. `ui/src/contract/api.d.ts` is generated from it by
+`openapi-typescript` and committed too, so the screen's types and the
+server's have one source.
 
 The predecessor did this by hand: 669 lines of TypeScript, a 233-line client,
-and a 343-line fixture test whose own header names the weakness — *"a field the
-server REMOVES fails naming it, and a field it ADDS passes. One direction."*
-Its fixtures were produced by a `cargo run` in a different repository. Both
-halves are here, the generated types are 165 lines, and a byte diff catches a
-field added as readily as one removed.
+and a fixture test whose own header admitted *"a field the server REMOVES
+fails naming it, and a field it ADDS passes. One direction."* The generated
+types are 165 lines, and a byte diff catches changes in both directions. The
+guard regenerates twice and compares before trusting the diff, because a byte
+comparison is only fair over a deterministic generator.
 
-The guard regenerates twice and compares before trusting the diff, because a
-byte comparison is only fair over a deterministic generator — and a flaky guard
-teaches people to ignore it.
+`scripts/check-documented-routes.sh` holds this README to the contract, in
+both directions: an undocumented route fails, and so does a documented route
+that is not served. It does the same for the environment variables the binary
+reads.
 
-## Testing the screen
+### Live updates
 
-```sh
-cd ui && pnpm test
-```
+The server reads each tape dataset's durable bound once a second and sends a
+`tape` event only when one moves. The browser refetches that dataset when
+told, and not otherwise. This was measured rather than assumed, against the
+real tape:
 
-The server's tests and the screen's are separate suites, and until 2026-09-22
-there was only one of them. `check-screen-tests.sh` runs the second in the
-gate.
-
-They cover the pure functions and nothing else: money parsing, the two clocks'
-arithmetic, why the screen is silent, and how a duration renders. No jsdom and
-no testing-library — every one of those takes values and returns values, and a
-DOM would cost setup on every run to hold nothing extra. About 130ms.
-
-**What they cannot see is a panel that computes correctly and draws nothing.**
-That is not hypothetical: two panels once asked for wall-clock windows against
-a thirty-three-hour-old tape and rendered empty tables, and a ticker selector
-derived from capped rows offered one instrument of six. Both were found by
-opening the browser, and that stays the answer for anything that renders.
-
-## Layout
-
-```
-  crates/galata-tower/   the server
-  ui/                    the React app; `ui/dist` is embedded at compile time
-  openapi.snapshot.json  the contract, generated and committed
-  scripts/               the guards
-```
-
-One binary serves both halves, following the cereyan pattern already proven in
-this tree — so a deployment runs no node process.
-
-## Running it
-
-```sh
-GALATA_ARCHIVE=../galata-datawatch/var/archive cargo run
-```
-
-`GALATA_TAPE` points at the tape, `var/tape` by default, which
-`galata-tape-rebuild` writes beside the archive.
-`GALATA_TOWER_LISTEN` moves the tower off `127.0.0.1:8777`, and `GALATA_BROKER`
-off `127.0.0.1:4222`. Loopback is the default for both because serving other
-machines, and reaching another machine's bus, are deployment decisions — made
-by setting these rather than by the binary assuming them.
-
-**The tower starts whether or not a broker answers.** The record is a fact on
-disk and does not need a bus to be true, so a refused connection is reported
-and the record is still served.
-
-## Following the record
-
-The screen does not poll. The tower reads each tape kind's durable bound once a
-second and sends a `tape` event only when one moves; the browser refetches that
-kind's rows when it is told, and not otherwise.
-
-That shape was measured rather than assumed. Against the real tape:
-
-```
+```text
   open + bound   53µs      "has it grown?"
   full view      2.85ms    39,231 rows decoded
 ```
 
-Asking is fifty-four times cheaper than reading, so the tower asks — once, for
-every browser — and the expensive half runs only when the answer is yes. A
-`refetchInterval` in the browser would pay the expensive half on a timer to
-usually learn nothing; a conditional request would still cost a round trip per
-browser per interval to be told nothing happened. The tower already holds an
-open channel to every browser, and not asking is cheaper than a cheap way of
-asking.
+Asking is fifty-four times cheaper than reading, so the tower asks once, for
+every browser, and does the expensive read only when the answer is yes.
+`cargo run --release --example cost-of-a-bound` reproduces both numbers.
 
-`cargo run --release --example cost-of-a-bound` is how those two numbers were
-got, and is kept runnable so the next person can check them rather than trust
-them.
-
-### Making the record move
-
-The two numbers above measure the halves. To watch the whole thing — grow the
-tape, get an event, see the panel refetch — give the tower a copy of the tape
-with its newest segment held back, and then put it back:
+To watch the whole loop, give the tower a copy of the tape with its newest
+segment held back, then put it back:
 
 ```sh
 cp -R ../galata-datawatch/var/tape /tmp/tape-live
@@ -206,38 +278,65 @@ GALATA_TAPE=/tmp/tape-live cargo run --release
 mv /tmp/held.parquet /tmp/tape-live/kind=quotes/date=2026-09-22/
 ```
 
-The bound moves within a second and the Tape panel refetches — no poll, no
-reload. Done on 2026-09-23: `68286` became `1790058637809031` and the rows
-changed with it. The bytes are the real tape's; nothing is fabricated, and the
-bound moves exactly as it does after a `galata-tape-rebuild`.
+The bound moves within a second and the Tape panel refetches, with no poll
+and no reload.
 
-**The "advanced Ns ago" counter cannot be measured from a background tab.**
-Chrome throttles timers in a tab that is not visible, and a tab driven from a
-tool is never focused — `document.visibilityState` says `hidden`. Measured that
-way the counter appeared to run at 2× real time, then at 1.19×, then to stop
-altogether; all three were the throttle. The value itself is computed from
-`Date.now()` at render rather than accumulated, so it is right whenever it is
-drawn: what the throttle changes is how often it is redrawn, never what it
-says. Look at the tab, or read the number as an eyeball check rather than a
-measurement.
+**Don't time the "advanced Ns ago" counter from a background tab.** Chrome
+throttles timers in hidden tabs, and a tab driven by automation is never
+focused. The value is computed from `Date.now()` at render, so it is right
+whenever it is drawn. Only how often it is redrawn changes.
 
-Each panel shows how long since the record it draws last advanced, because a
-current table and an hour-old one are otherwise identical.
+---
 
-## What it deliberately does not do
+## Development
 
-- **Read `markets.>` from the broker.** The record has market data, bounded,
-  and an hour of candles lives there anyway. The subject roots were separated
-  so that a dashboard could take `status.>` *without* the firehose, and the
-  `reader` grant covers `status.>` alone.
+```sh
+./scripts/check-all.sh         # everything CI runs: guards, clippy, tests, the screen's tests
+cargo test                     # the server's tests
+cd ui && pnpm install && pnpm test    # the screen's tests (vitest, ~130 ms)
+cd ui && pnpm dev              # the screen with hot reload
+```
 
-  The reason is the predecessor's: *"an identity that could read every algo's
-  book is exactly what a password on an operator's laptop should not be."* A
-  process that serves a web page holds that password in its environment.
+| Guard | Holds |
+|---|---|
+| `check-no-capture-loop.sh` | no capture loop or venue transport is linked |
+| `check-no-market-reach.sh` | nothing subscribes under `markets.` |
+| `check-contract-drift.sh` | the committed OpenAPI document and TypeScript types match the code |
+| `check-documented-routes.sh` | this README names every served route and every variable read |
+| `check-dist-drift.sh` | the committed `ui/dist` is the build of `ui/src` |
+| `check-no-float-money.sh` | money is converted to a plotting number in exactly one file |
+| `check-screen-tests.sh` | the screen's test suite runs in the gate |
+| `check-against-tarballs.sh` | the tower builds against the datawatch crates as packaged, not just the checkout |
 
-  The grant is the boundary and the server enforces it;
-  `check-no-market-reach.sh` holds the other side, so that a subscription
-  written here fails in this repository rather than being repaired by widening
-  the grant.
+The screen's tests cover pure functions only: money parsing, the arithmetic
+of the two clocks, why the screen is silent, and how a duration renders.
+There is no jsdom. **What they cannot catch is a panel that computes
+correctly and draws nothing.** That has happened: two panels once rendered
+empty tables against a 33-hour-old tape, and a ticker selector offered one
+instrument of six. Both were found by opening the browser, and that is still
+the check for anything that renders. See [`ui/README.md`](ui/README.md) for
+the screen.
 
-Licensed under the MIT licence.
+---
+
+## Roadmap
+
+| Item | Status |
+|---|---|
+| Read API over the record: partitions, overdue, gaps, failures, coverage, rates, instruments | done |
+| Generated OpenAPI contract and TypeScript types, with drift guards | done |
+| React screen embedded in the binary, with no node process in deployment | done |
+| Live venue status over SSE, and tape refetch driven by the durable bound | done |
+| Durable bound reported per venue | done |
+| Confirm the candle chart renders in a real browser (so far verified through the API only) | next |
+| Switch to crates.io dependencies once galata-datawatch 0.1.0 is published | blocked on datawatch Tier 10 |
+| Views for later Galata layers: research runs, signals, risk limits and execution state, each read-only and each added as that layer ships | planned |
+
+The tower stays **read-only** across every phase. It reports what the record
+and the bus say, and it never places, sizes or approves anything.
+
+---
+
+## Licence
+
+MIT. See [LICENSE-MIT](LICENSE-MIT).
