@@ -50,7 +50,6 @@ fi
 
 # A venue's transport. NOT rustls: see the header.
 FORBIDDEN='tokio-tungstenite|tungstenite|reqwest'
-DEP_LINE='galata-datawatch = { path = "../galata-datawatch/crates/galata-datawatch", default-features = false }'
 
 case "$VERB" in
     plants)
@@ -63,15 +62,18 @@ case "$VERB" in
         ;;
     plant)
         case "$PLANT" in
-            # One word in a manifest, 85 crates in the tree.
+            # One clause in a manifest, 85 crates in the tree. The RULE is
+            # planted, not a line: the dependency gained `features = [...]`
+            # in 730923e and a plant matching the whole line stopped planting.
             capture-feature)
-                python3 - "$ROOT/Cargo.toml" <<PLANTPY
-import pathlib, sys
+                python3 - "$ROOT/Cargo.toml" <<'PLANTPY'
+import pathlib, re, sys
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
-marker = '$DEP_LINE'
-assert marker in text, "the plant's target moved -- the PLANT is wrong, not the guard"
-path.write_text(text.replace(marker, 'galata-datawatch = { path = "../galata-datawatch/crates/galata-datawatch" }', 1))
+line = re.compile(r'^(galata-datawatch\s*=\s*\{[^}\n]*?),\s*default-features\s*=\s*false', re.M)
+planted, count = line.subn(r'\1', text, count=1)
+assert count == 1, "no galata-datawatch line takes default-features = false -- the PLANT is wrong, not the guard"
+path.write_text(planted)
 PLANTPY
                 ;;
             # A transport added straight to the crate, which leaves the feature

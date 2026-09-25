@@ -165,7 +165,15 @@ for guard in "$ROOT"/scripts/check-*.sh; do
         # copy above or the guard runs below, and it is cheaper to print the
         # answer than to instrument this by hand again.
         copied=$(( SECONDS - plant_began ))
-        GALATA_GUARD_PLANT="$plant" "$guard" plant "$planted" >/dev/null 2>&1
+        # **A plant that did not plant is not a guard that cannot fail.** Until
+        # 2026-09-25 this exit was thrown away: the capture-feature plant's
+        # target line had moved, its own assert said so, and the guard was
+        # then checked on an unplanted copy and reported as toothless — on
+        # every run since 730923e, for a reason that was never the guard's.
+        if ! plant_out=$(GALATA_GUARD_PLANT="$plant" "$guard" plant "$planted" 2>&1); then
+            failures+=("$label: the PLANT failed, so the guard was not judged: $(tail -n 1 <<<"$plant_out")")
+            continue
+        fi
         if out=$("$guard" check "$planted" 2>&1); then
             failures+=("$label: PASSES with its own violation planted; it cannot fail")
         elif expected=$(GALATA_GUARD_PLANT="$plant" "$guard" expect "$ROOT" 2>/dev/null); then
