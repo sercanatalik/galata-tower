@@ -22,6 +22,8 @@ function state(over: Partial<LiveState>): LiveState {
     broker: null,
     bounds: {},
     advancedAt: {},
+    archive: {},
+    archiveAt: null,
     resyncs: 0,
     drops: 0,
     missed: 0,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { forHumans } from './Gaps'
+import { forHumans } from './format'
 
 const SECOND = 1_000_000
 const MINUTE = 60 * SECOND

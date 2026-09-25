@@ -10,6 +10,8 @@
 //! compile time, so there is no node process in a deployment.
 
 mod failures;
+mod latest;
+mod shape;
 mod tape;
 
 use std::collections::BTreeMap;
@@ -83,6 +85,53 @@ struct Tower {
     broker: Arc<RwLock<BrokerState>>,
     /// Each kind's durable bound, as the watch last read it.
     bounds: Arc<RwLock<tape::Bounds>>,
+    /// Each root's newest arrival per venue, as the watch last read it.
+    frontiers: Arc<RwLock<Frontiers>>,
+    /// The venues' normalisers, for reading prices off the archive's tail.
+    normalisers: Arc<latest::Normalisers>,
+    /// The latest prices, shared by every browser for a second.
+    latest: Arc<latest::Shared>,
+    /// The partition listing, and the directory stamps it is valid for.
+    listing: Arc<Listing>,
+}
+
+/// The cached partition listing, with the stamps it is valid for.
+type Listing = std::sync::Mutex<Option<(Stamp, Vec<PathBuf>)>>;
+
+/// Modification times of the root, `venue=` and `kind=` directories: they change when a partition appears or goes.
+type Stamp = Vec<(PathBuf, Option<SystemTime>)>;
+
+/// Each root's newest arrival per venue, on our clock.
+#[derive(Clone, Debug, Default)]
+struct Frontiers {
+    archive: shape::Frontier,
+    tape: shape::Frontier,
+}
+
+/// One venue's frontier in each root. Both are arrival times on this machine's clock.
+#[derive(Clone, Debug, Serialize, ToSchema)]
+struct VenueFrontier {
+    /// The venue.
+    venue: String,
+    /// The newest arrival the archive holds, or null.
+    archive_micros: Option<i64>,
+    /// The newest arrival the tape holds, or null.
+    tape_micros: Option<i64>,
+}
+
+impl Frontiers {
+    fn by_venue(&self) -> Vec<VenueFrontier> {
+        let venues: std::collections::BTreeSet<&String> =
+            self.archive.keys().chain(self.tape.keys()).collect();
+        venues
+            .into_iter()
+            .map(|venue| VenueFrontier {
+                venue: venue.clone(),
+                archive_micros: self.archive.get(venue).copied(),
+                tape_micros: self.tape.get(venue).copied(),
+            })
+            .collect()
+    }
 }
 
 /// One thing the tower has to say.
@@ -98,6 +147,17 @@ enum Live {
     /// already caps them, and a browser that does not draw this kind should
     /// not pay to receive it.
     Tape(TapeMoved),
+    /// A venue's archive has a newer arrival.
+    Archive(ArchiveMoved),
+}
+
+/// A venue's archive frontier moved.
+#[derive(Clone, Debug, Serialize, ToSchema)]
+struct ArchiveMoved {
+    /// Whose archive.
+    venue: String,
+    /// The newest arrival it now holds, our clock.
+    frontier_micros: i64,
 }
 
 /// One venue's tape for one kind has a new durable bound.
@@ -186,6 +246,8 @@ const STATUS_BACKLOG: usize = 64;
 struct Partition {
     /// Its path relative to the archive root.
     path: String,
+    /// How many segments it holds now. Counted on every read, since an open day grows.
+    segments: usize,
 }
 
 /// A closed day still holding more segments than compaction should have left.
@@ -231,6 +293,8 @@ struct About {
     /// written. This tower links the same crate, serves the same tape, and
     /// never asked.
     tape_problems: Vec<String>,
+    /// Each root's newest arrival per venue. Their difference is how far the tape lags the archive.
+    frontiers: Vec<VenueFrontier>,
 }
 
 /// One directory this tower reads.
@@ -278,28 +342,102 @@ impl Root {
 }
 
 /// The partitions the record holds.
+///
+/// A walk that cannot run is a refusal naming the root, never an empty list.
 #[utoipa::path(
     get,
     path = "/v1/partitions",
-    responses((status = 200, description = "Every partition in the archive", body = Vec<Partition>)),
+    responses(
+        (status = 200, description = "Every partition in the archive", body = Vec<Partition>),
+        (status = 500, description = "The archive root could not be listed", body = String),
+    ),
 )]
-async fn partitions(State(tower): State<Tower>) -> Json<Vec<Partition>> {
+async fn partitions(State(tower): State<Tower>) -> Response {
     let root = tower.archive.clone();
-    let found = tokio::task::spawn_blocking(move || galata_segments::partitions(&root))
-        .await
-        .unwrap_or_default();
+    let listing = Arc::clone(&tower.listing);
+    let walked = tokio::task::spawn_blocking(move || {
+        std::fs::read_dir(&root)?;
+        let found = cached_partitions(&root, &listing)
+            .into_iter()
+            .map(|dir| {
+                let segments = galata_segments::list_segments(&dir).len();
+                (dir, segments)
+            })
+            .collect::<Vec<_>>();
+        Ok::<_, std::io::Error>(found)
+    })
+    .await;
+    let found = match walked {
+        Ok(Ok(found)) => found,
+        Ok(Err(refusal)) => return refuse_root(&tower.archive, &refusal.to_string()),
+        Err(join) => return refuse_root(&tower.archive, &join.to_string()),
+    };
     Json(
         found
             .into_iter()
-            .map(|path| Partition {
+            .map(|(path, segments)| Partition {
                 path: path
                     .strip_prefix(&tower.archive)
                     .unwrap_or(&path)
                     .display()
                     .to_string(),
+                segments,
             })
-            .collect(),
+            .collect::<Vec<_>>(),
     )
+    .into_response()
+}
+
+/// A 500 that names the root and what went wrong.
+fn refuse_root(root: &std::path::Path, why: &str) -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        format!("the archive root {} could not be listed: {why}", root.display()),
+    )
+        .into_response()
+}
+
+/// The partition listing, walked again only when a partition directory may have appeared or gone.
+fn cached_partitions(
+    root: &std::path::Path,
+    listing: &Listing,
+) -> Vec<PathBuf> {
+    let stamp = stamp_of(root);
+    let mut held = listing.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some((seen, found)) = held.as_ref()
+        && *seen == stamp
+    {
+        return found.clone();
+    }
+    let found = galata_segments::partitions(root);
+    *held = Some((stamp, found.clone()));
+    found
+}
+
+/// The mtimes of the root and the two directory levels above the partitions.
+fn stamp_of(root: &std::path::Path) -> Stamp {
+    let mtime = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    let children = |p: &std::path::Path| -> Vec<PathBuf> {
+        let mut out: Vec<PathBuf> = std::fs::read_dir(p)
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .map(|e| e.path())
+                    .filter(|p| p.is_dir())
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.sort();
+        out
+    };
+    let mut stamp = vec![(root.to_path_buf(), mtime(root))];
+    for venue in children(root) {
+        stamp.push((venue.clone(), mtime(&venue)));
+        for kind in children(&venue) {
+            stamp.push((kind.clone(), mtime(&kind)));
+        }
+    }
+    stamp
 }
 
 /// How many segments a closed partition may hold before it is worth naming.
@@ -414,6 +552,7 @@ async fn about(State(tower): State<Tower>) -> Json<About> {
             .iter()
             .map(|problem| problem.to_string())
             .collect(),
+        frontiers: tower.frontiers.read().await.by_venue(),
     })
 }
 
@@ -437,6 +576,8 @@ fn mime_guess_for(path: &str) -> &'static str {
         Some("css") => "text/css",
         Some("svg") => "image/svg+xml",
         Some("json") => "application/json",
+        Some("woff2") => "font/woff2",
+        Some("woff") => "font/woff",
         _ => "text/html; charset=utf-8",
     }
 }
@@ -690,8 +831,10 @@ const TAPE_WATCH: Duration = Duration::from_secs(1);
 /// a cheap way of asking.
 fn watch_the_record(
     tape: PathBuf,
+    archive: PathBuf,
     status: broadcast::Sender<Live>,
     bounds: Arc<RwLock<tape::Bounds>>,
+    frontiers: Arc<RwLock<Frontiers>>,
 ) {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(TAPE_WATCH);
@@ -741,11 +884,37 @@ fn watch_the_record(
                 said_empty = false;
             }
 
-            for moved in moves(&last, &found) {
+            let tape_moved = moves(&last, &found);
+            let refresh_tape = ticks == 1 || !tape_moved.is_empty();
+            for moved in tape_moved {
                 let _ = status.send(Live::Tape(moved));
             }
             last = found.clone();
             *bounds.write().await = found;
+
+            // The archive's frontier is read from names alone; the tape's only when the tape moved.
+            let (archive_root, tape_root) = (archive.clone(), tape.clone());
+            let Ok((arrived, tape_edge)) = tokio::task::spawn_blocking(move || {
+                let tape_edge = refresh_tape.then(|| shape::tape_frontier(&tape_root));
+                (shape::archive_frontier(&archive_root), tape_edge)
+            })
+            .await
+            else {
+                continue;
+            };
+            let mut held = frontiers.write().await;
+            for (venue, &edge) in &arrived {
+                if held.archive.get(venue) != Some(&edge) {
+                    let _ = status.send(Live::Archive(ArchiveMoved {
+                        venue: venue.clone(),
+                        frontier_micros: edge,
+                    }));
+                }
+            }
+            held.archive = arrived;
+            if let Some(edge) = tape_edge {
+                held.tape = edge;
+            }
         }
     });
 }
@@ -875,6 +1044,10 @@ fn event_for(received: Result<Live, BroadcastStreamRecvError>) -> Event {
             .event("tape")
             .json_data(&moved)
             .unwrap_or_else(|_| Event::default().event("tape").data("{}")),
+        Ok(Live::Archive(moved)) => Event::default()
+            .event("archive")
+            .json_data(&moved)
+            .unwrap_or_else(|_| Event::default().event("archive").data("{}")),
         // **A gap is an event, never an absence.** Dropping is safe only
         // because the stream is level-triggered -- the next snapshot is the
         // whole state -- and even then the browser is told how far it fell
@@ -1097,6 +1270,129 @@ async fn rates(State(tower): State<Tower>, Query(query): Query<RatesQuery>) -> R
     }
 }
 
+/// Every venue's newest prices, read from the archive's tail.
+///
+/// Not the tape, which may be days behind, and not the bus, which the tower may not read market data from.
+#[utoipa::path(
+    get,
+    path = "/v1/latest",
+    responses((status = 200, description = "The newest quote and trade per instrument, from the archive", body = latest::Latest)),
+)]
+async fn latest_prices(State(tower): State<Tower>) -> Response {
+    let frontier = tower.frontiers.read().await.archive.clone();
+    let (archive, normalisers, shared) = (
+        tower.archive.clone(),
+        Arc::clone(&tower.normalisers),
+        Arc::clone(&tower.latest),
+    );
+    match tokio::task::spawn_blocking(move || {
+        shared.get(|| latest::latest(&archive, &frontier, &normalisers))
+    })
+    .await
+    {
+        Ok(found) => Json((*found).clone()).into_response(),
+        Err(join) => unfinished(join),
+    }
+}
+
+/// The record over time: held runs, recorded gaps, backfills, and what only the archive holds.
+#[utoipa::path(
+    get,
+    path = "/v1/timeline",
+    responses(
+        (status = 200, description = "Each venue and dataset as intervals", body = shape::Timeline),
+        (status = 400, description = "The tape could not be read", body = String),
+    ),
+)]
+async fn timeline(State(tower): State<Tower>) -> Response {
+    let (tape, archive) = (tower.tape.clone(), tower.archive.clone());
+    match tokio::task::spawn_blocking(move || shape::timeline(&tape, &archive)).await {
+        Ok(Ok(found)) => Json(found).into_response(),
+        Ok(Err(refusal)) => (StatusCode::BAD_REQUEST, refusal.to_string()).into_response(),
+        Err(join) => unfinished(join),
+    }
+}
+
+/// Which candles to read.
+#[derive(Deserialize, utoipa::IntoParams)]
+struct CandleQuery {
+    /// The venue.
+    venue: String,
+    /// The instrument.
+    ticker: String,
+    /// 1m, 5m, 15m or 1h.
+    interval: String,
+    /// Start, venue micros, inclusive. Defaults to the beginning.
+    from: Option<i64>,
+    /// End, venue micros, exclusive. Defaults to the end.
+    to: Option<i64>,
+}
+
+/// One instrument's candles, folded and resampled on the server.
+#[utoipa::path(
+    get,
+    path = "/v1/candles",
+    params(CandleQuery),
+    responses(
+        (status = 200, description = "Bars, oldest first, each marked if a backfill sent it", body = shape::Candles),
+        (status = 400, description = "An unknown interval, or a window that runs backwards", body = String),
+    ),
+)]
+async fn candles(State(tower): State<Tower>, Query(query): Query<CandleQuery>) -> Response {
+    let Some(interval) = shape::Interval::parse(&query.interval) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("{} is not an interval; ask for one of {}", query.interval, shape::Interval::NAMES),
+        )
+            .into_response();
+    };
+    let tape = tower.tape.clone();
+    match tokio::task::spawn_blocking(move || {
+        shape::candles(
+            &tape,
+            &query.venue,
+            &query.ticker,
+            interval,
+            &query.interval,
+            query.from.unwrap_or(i64::MIN + 1),
+            query.to.unwrap_or(i64::MAX),
+        )
+    })
+    .await
+    {
+        Ok(Ok(found)) => Json(found).into_response(),
+        Ok(Err(refusal)) => (StatusCode::BAD_REQUEST, refusal.to_string()).into_response(),
+        Err(join) => unfinished(join),
+    }
+}
+
+/// Every venue and dataset the tape holds, as the Overview's grid.
+#[utoipa::path(
+    get,
+    path = "/v1/board",
+    responses(
+        (status = 200, description = "Tape rows, archive segments today, coverage and gap rows per venue and dataset", body = shape::Datasets),
+        (status = 400, description = "The tape could not be read", body = String),
+    ),
+)]
+async fn board(State(tower): State<Tower>) -> Response {
+    let (tape, archive, today) = (tower.tape.clone(), tower.archive.clone(), today_utc());
+    match tokio::task::spawn_blocking(move || shape::board(&tape, &archive, &today)).await {
+        Ok(Ok(found)) => Json(found).into_response(),
+        Ok(Err(refusal)) => (StatusCode::BAD_REQUEST, refusal.to_string()).into_response(),
+        Err(join) => unfinished(join),
+    }
+}
+
+/// A read that panicked or was cancelled.
+fn unfinished(join: tokio::task::JoinError) -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        format!("the read did not finish: {join}"),
+    )
+        .into_response()
+}
+
 /// The document, described once by the routes that answer it.
 #[derive(OpenApi)]
 #[openapi(
@@ -1104,7 +1400,7 @@ async fn rates(State(tower): State<Tower>, Query(query): Query<RatesQuery>) -> R
         title = "galata-tower",
         description = "A read API over the galata-datawatch record. It watches the record, not the worker.",
     ),
-    components(schemas(About, Root, Partition, Overdue, Board, BrokerState, TapeMoved))
+    components(schemas(About, Root, Partition, Overdue, Board, BrokerState, TapeMoved, ArchiveMoved, VenueFrontier))
 )]
 struct Contract;
 
@@ -1124,6 +1420,10 @@ fn router(tower: Tower) -> (Router, utoipa::openapi::OpenApi) {
         .routes(routes!(failures))
         .routes(routes!(coverage))
         .routes(routes!(rates))
+        .routes(routes!(latest_prices))
+        .routes(routes!(timeline))
+        .routes(routes!(candles))
+        .routes(routes!(board))
         .with_state(tower)
         .split_for_parts()
 }
@@ -1142,6 +1442,10 @@ fn dump_openapi() -> Result<String, Box<dyn std::error::Error>> {
         board: Arc::new(RwLock::new(BTreeMap::new())),
         broker: Arc::default(),
         bounds: Arc::default(),
+        frontiers: Arc::default(),
+        normalisers: Arc::new(latest::Normalisers::none()),
+        latest: Arc::default(),
+        listing: Arc::default(),
     });
     Ok(serde_json::to_string_pretty(&api)? + "\n")
 }
@@ -1178,14 +1482,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         board: Arc::clone(&board),
         broker: Arc::clone(&broker_state),
         bounds: Arc::clone(&bounds),
+        frontiers: Arc::default(),
+        normalisers: Arc::new(latest::Normalisers::load(std::path::Path::new(
+            &std::env::var("GALATA_CONFIG").unwrap_or_else(|_| "config/datawatch.toml".to_owned()),
+        ))),
+        latest: Arc::default(),
+        listing: Arc::default(),
     };
+    for refusal in &tower.normalisers.refusals {
+        tracing::warn!(%refusal, "latest prices will not include this");
+    }
 
     // Loopback by default, like everything else here: reaching another machine
     // is a deployment decision, made by setting this.
     let broker = std::env::var("GALATA_BROKER").unwrap_or_else(|_| "127.0.0.1:4222".to_owned());
     subscribe_to_status(broker, status.clone(), board, broker_state);
     // The record's own liveness, which does not depend on a bus at all.
-    watch_the_record(tower.tape.clone(), status, bounds);
+    watch_the_record(
+        tower.tape.clone(),
+        tower.archive.clone(),
+        status,
+        bounds,
+        Arc::clone(&tower.frontiers),
+    );
 
     // Everything else is the screen, which routes itself.
     let (app, _) = router(tower.clone());

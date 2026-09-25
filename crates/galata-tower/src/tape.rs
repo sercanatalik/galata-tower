@@ -47,7 +47,7 @@ use serde_json::{Map, Value};
 /// `Kind::Book` has a schema and no rows in any tape here; `Unparsed` and
 /// `Reorgs` are bytes and chain surgery rather than a dataset a screen reads.
 /// Adding one is adding a line here.
-const SERVED: [Kind; 6] = [
+pub(crate) const SERVED: [Kind; 6] = [
     Kind::Quotes,
     Kind::Trades,
     Kind::Candles,

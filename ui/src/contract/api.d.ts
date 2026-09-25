@@ -21,6 +21,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/board": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Every venue and dataset the tape holds, as the Overview's grid. */
+        get: operations["board"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/candles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One instrument's candles, folded and resampled on the server. */
+        get: operations["candles"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/coverage": {
         parameters: {
             query?: never;
@@ -119,6 +153,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/latest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Every venue's newest prices, read from the archive's tail.
+         * @description Not the tape, which may be days behind, and not the bus, which the tower may not read market data from.
+         */
+        get: operations["latest_prices"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/overdue": {
         parameters: {
             query?: never;
@@ -160,7 +214,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** The partitions the record holds. */
+        /**
+         * The partitions the record holds.
+         * @description A walk that cannot run is a refusal naming the root, never an empty list.
+         */
         get: operations["partitions"];
         put?: never;
         post?: never;
@@ -242,6 +299,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/timeline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The record over time: held runs, recorded gaps, backfills, and what only the archive holds. */
+        get: operations["timeline"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -256,6 +330,8 @@ export interface components {
         About: {
             /** @description The archive root being watched. */
             archive: components["schemas"]["Root"];
+            /** @description Each root's newest arrival per venue. Their difference is how far the tape lags the archive. */
+            frontiers: components["schemas"]["VenueFrontier"][];
             /** @description The tape columns a reader can prune on, from the schema itself. */
             prune_on: string[];
             /**
@@ -282,6 +358,45 @@ export interface components {
              *     never asked.
              */
             tape_problems: string[];
+        };
+        /** @description One venue's archive over time. */
+        ArchiveLane: {
+            /** @description Runs of arrival time the archive holds segments for. */
+            spans: components["schemas"]["Span"][];
+            /** @description The venue. */
+            venue: string;
+        };
+        /** @description A venue's archive frontier moved. */
+        ArchiveMoved: {
+            /**
+             * Format: int64
+             * @description The newest arrival it now holds, our clock.
+             */
+            frontier_micros: number;
+            /** @description Whose archive. */
+            venue: string;
+        };
+        /** @description One bar. Prices and sizes are decimal strings. */
+        Bar: {
+            /**
+             * Format: int64
+             * @description The bar's open time, venue micros.
+             */
+            at_micros: number;
+            /** @description Whether any minute in it arrived by a backfill. */
+            backfilled: boolean;
+            /** @description Last close. */
+            close: string;
+            /** @description Highest high. */
+            high: string;
+            /** @description Whether every minute in it had closed. */
+            is_final: boolean;
+            /** @description Lowest low. */
+            low: string;
+            /** @description First open. */
+            open: string;
+            /** @description Summed volume. */
+            volume: string;
         };
         /**
          * @description What a browser is handed on connect, and after a gap.
@@ -336,6 +451,19 @@ export interface components {
              */
             refusal?: string | null;
         };
+        /** @description One instrument's candles at one interval. */
+        Candles: {
+            /** @description Oldest first. */
+            bars: components["schemas"]["Bar"][];
+            /** @description Whether older bars were left out to stay under the cap. */
+            capped: boolean;
+            /** @description The interval, as asked. */
+            interval: string;
+            /** @description The instrument. */
+            ticker: string;
+            /** @description The venue. */
+            venue: string;
+        };
         /** @description What one cause accounts for, over a window. */
         Cause: {
             /** @description The cause, as the capture wrote it — `downtime`, `crash_unflushed`. */
@@ -387,6 +515,31 @@ export interface components {
             /** @description How many distinct tickers. */
             tickers: number;
         };
+        /** @description One `(venue, dataset)` cell of the Overview board. */
+        Cell: {
+            /** @description Segments in the archive's partition for today, or null where the archive keeps no such kind. */
+            archive_today?: number | null;
+            /** @description The newest day the tape covers for it, if any. */
+            coverage_date?: string | null;
+            /**
+             * Format: int64
+             * @description Micros held on that day.
+             */
+            covered_micros: number;
+            /** @description Gap rows the record wrote against this dataset. */
+            gap_rows: number;
+            /** @description The dataset. */
+            kind: string;
+            /** @description Rows the tape holds. */
+            tape_rows: number;
+            /** @description The venue. */
+            venue: string;
+            /**
+             * Format: int64
+             * @description Micros that day accounts for.
+             */
+            window_micros: number;
+        };
         /** @description The record's gaps over a window, by cause. */
         Coverage: {
             /** @description The tape's durable bound per venue, as every read here reports it. */
@@ -417,6 +570,13 @@ export interface components {
         Covered: {
             /** @description Newest day first. */
             days: components["schemas"]["DayCoverage"][];
+        };
+        /** @description Every `(venue, dataset)` the tape holds, as one read. */
+        Datasets: {
+            /** @description Venue-major, dataset order as served. */
+            cells: components["schemas"]["Cell"][];
+            /** @description The UTC day `archive_today` counts. */
+            today: string;
         };
         /** @description One day of one dataset, and how much of it the record holds. */
         DayCoverage: {
@@ -528,6 +688,21 @@ export interface components {
             /** @description How many carried a `failures/` directory at all. */
             with_failures: number;
         };
+        /** @description One recorded gap interval. */
+        GapSpan: {
+            /** @description The cause, as the capture wrote it. */
+            cause: string;
+            /**
+             * Format: int64
+             * @description Start, in micros.
+             */
+            from: number;
+            /**
+             * Format: int64
+             * @description End, in micros.
+             */
+            to: number;
+        };
         /** @description One hour of one dataset. */
         HourlyRows: {
             /**
@@ -595,6 +770,27 @@ export interface components {
              */
             instruments: components["schemas"]["Instrument"][];
         };
+        /** @description One `(venue, dataset)` over time. */
+        Lane: {
+            archive_only?: null | components["schemas"]["Span"];
+            /** @description Runs of bars that arrived late, sent by a backfill. */
+            backfilled: components["schemas"]["Span"][];
+            /** @description Recorded gaps, merged within each cause. */
+            gaps: components["schemas"]["GapSpan"][];
+            /** @description Runs of receipt time that hold rows. */
+            held: components["schemas"]["Span"][];
+            /** @description The dataset. */
+            kind: string;
+            /** @description The venue. */
+            venue: string;
+        };
+        /** @description Every venue's newest prices, and why any venue has none. */
+        Latest: {
+            /** @description Why a declared venue is not priced. */
+            refusals: string[];
+            /** @description One entry per venue with a normaliser and an archive. */
+            venues: components["schemas"]["VenuePrices"][];
+        };
         /**
          * @description A closed day still holding more segments than compaction should have left.
          *
@@ -611,6 +807,45 @@ export interface components {
         Partition: {
             /** @description Its path relative to the archive root. */
             path: string;
+            /** @description How many segments it holds now. Counted on every read, since an open day grows. */
+            segments: number;
+        };
+        /** @description One instrument's newest quote and trade. Prices and sizes are decimal strings. */
+        Price: {
+            /** @description Best ask. */
+            ask?: string | null;
+            /** @description Ask size. */
+            ask_size?: string | null;
+            /** @description Best bid. */
+            bid?: string | null;
+            /** @description Bid size. */
+            bid_size?: string | null;
+            /** @description Last trade price. */
+            last?: string | null;
+            /** @description Last trade size. */
+            last_size?: string | null;
+            /**
+             * Format: int64
+             * @description The quote's venue time.
+             */
+            quote_at_micros?: number | null;
+            /**
+             * Format: int64
+             * @description When the quote arrived, our clock.
+             */
+            quote_recv_micros?: number | null;
+            /** @description The instrument. */
+            ticker: string;
+            /**
+             * Format: int64
+             * @description The trade's venue time.
+             */
+            trade_at_micros?: number | null;
+            /**
+             * Format: int64
+             * @description When the trade arrived, our clock.
+             */
+            trade_recv_micros?: number | null;
         };
         /** @description Rows per hour, newest first. */
         Rates: {
@@ -674,6 +909,19 @@ export interface components {
             /** @description The venue, taken from the subject. */
             venue: string;
         };
+        /** @description A half-open span of receipt time. */
+        Span: {
+            /**
+             * Format: int64
+             * @description Start, in micros.
+             */
+            from: number;
+            /**
+             * Format: int64
+             * @description End, in micros.
+             */
+            to: number;
+        };
         /**
          * @description One venue's tape for one kind has a new durable bound.
          *
@@ -690,6 +938,45 @@ export interface components {
             kind: string;
             /** @description Whose stream moved. */
             venue: string;
+        };
+        /** @description The record over time, as the Overview draws it. */
+        Timeline: {
+            /** @description One lane per venue the archive holds. */
+            archive: components["schemas"]["ArchiveLane"][];
+            /** @description One lane per `(venue, dataset)` the tape holds, gaps excluded. */
+            lanes: components["schemas"]["Lane"][];
+        };
+        /** @description One venue's frontier in each root. Both are arrival times on this machine's clock. */
+        VenueFrontier: {
+            /**
+             * Format: int64
+             * @description The newest arrival the archive holds, or null.
+             */
+            archive_micros?: number | null;
+            /**
+             * Format: int64
+             * @description The newest arrival the tape holds, or null.
+             */
+            tape_micros?: number | null;
+            /** @description The venue. */
+            venue: string;
+        };
+        /** @description One venue's newest prices. */
+        VenuePrices: {
+            /**
+             * Format: int64
+             * @description The newest arrival its archive holds, our clock.
+             */
+            frontier_micros: number;
+            /** @description Every declared instrument, priced or not. */
+            prices: components["schemas"]["Price"][];
+            /** @description The venue. */
+            venue: string;
+            /**
+             * Format: int64
+             * @description How far back from the frontier was searched.
+             */
+            window_secs: number;
         };
         /** @description A window's rows, and how far the store is durable. */
         View: {
@@ -763,6 +1050,75 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["About"];
+                };
+            };
+        };
+    };
+    board: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Tape rows, archive segments today, coverage and gap rows per venue and dataset */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Datasets"];
+                };
+            };
+            /** @description The tape could not be read */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    candles: {
+        parameters: {
+            query: {
+                /** @description The venue. */
+                venue: string;
+                /** @description The instrument. */
+                ticker: string;
+                /** @description 1m, 5m, 15m or 1h. */
+                interval: string;
+                /** @description Start, venue micros, inclusive. Defaults to the beginning. */
+                from?: number | null;
+                /** @description End, venue micros, exclusive. Defaults to the end. */
+                to?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bars, oldest first, each marked if a backfill sent it */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Candles"];
+                };
+            };
+            /** @description An unknown interval, or a window that runs backwards */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
                 };
             };
         };
@@ -870,6 +1226,26 @@ export interface operations {
             };
         };
     };
+    latest_prices: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The newest quote and trade per instrument, from the archive */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Latest"];
+                };
+            };
+        };
+    };
     overdue: {
         parameters: {
             query?: {
@@ -913,6 +1289,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Partition"][];
+                };
+            };
+            /** @description The archive root could not be listed */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
                 };
             };
         };
@@ -999,6 +1384,35 @@ export interface operations {
                 };
             };
             /** @description An unknown dataset, or a window that runs backwards */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    timeline: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Each venue and dataset as intervals */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Timeline"];
+                };
+            };
+            /** @description The tape could not be read */
             400: {
                 headers: {
                     [name: string]: unknown;

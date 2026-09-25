@@ -42,7 +42,7 @@ thiserror = "2"
 # galata-datawatch's `design/measured.md`. The tower must never acquire the
 # websocket stack to read parquet, and `scripts/check-no-capture-loop.sh`
 # asks cargo rather than trusting this comment.
-galata-datawatch = { path = "../galata-datawatch/crates/galata-datawatch", default-features = false }
+galata-datawatch = { path = "../galata-datawatch/crates/galata-datawatch", default-features = false, features = ["hyperliquid"] }
 
 axum = { version = "0.8", features = ["json", "query", "tokio", "http1"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }

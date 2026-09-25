@@ -14,6 +14,7 @@ process.
 | Contract | `openapi-typescript` types generated from the tower's committed OpenAPI document |
 | Money | `decimal.js`; decimals arrive as strings and never become floats on the way in |
 | Charts | `lightweight-charts` 5 |
+| Fonts | `@fontsource-variable` Instrument Sans and JetBrains Mono, bundled into `dist` |
 | Tests | Vitest, in a Node environment, with no DOM |
 
 ## Commands
@@ -35,19 +36,24 @@ release build embeds the files.
 
 ```text
   src/
-    App.tsx             the page: one error boundary per panel
-    Instruments.tsx     Candles.tsx   Gaps.tsx   Failures.tsx
-    Coverage.tsx        Rates.tsx     Tape.tsx   the panels
-    Boundary.tsx        the error boundary, and what a caught throw says
-    panel.ts            one panel state for all: refused, reading, empty, ready
-    charts/useChart.ts  lightweight-charts, mounted and disposed with React
+    main.tsx            fonts, the query client, the root
+    App.tsx             the shell: header, truth bar, and the view the fragment names
+    app/                router.ts (hash routes) · TruthBar.tsx
+    views/              Overview.tsx · Markets.tsx · Record.tsx
+    kit/                Panel.tsx (the four states, rendered once) · format.ts (times, durations, counts)
+    charts/             CandleChart.tsx · BackfillBand.ts (a v5 series primitive) · Spark.tsx · useChart.ts
+    data/               queries.ts (every read in one place) · truth.ts (the truth bar's decisions)
+    Boundary.tsx        the error boundary around each section
+    panel.ts            which of the four states a read is in
     contract/
       api.d.ts          GENERATED from ../openapi.snapshot.json; never edited
       client.ts         the one API client, typed by api.d.ts
-      money.ts          the only place a decimal string is parsed
-    live/status.ts      the SSE status store
+      money.ts          the only place a decimal string is parsed, and the only float
+    live/status.ts      the SSE store: venues, broker, tape bounds, archive frontiers
   dist/                 the committed build, embedded by rust-embed
 ```
+
+The look is set by tokens in `index.css`: a dark ground, Instrument Sans for text and JetBrains Mono for figures, both bundled rather than fetched. Blue means up, orange means down, and amber is reserved for the tower's own state.
 
 ## Rules the screen keeps
 

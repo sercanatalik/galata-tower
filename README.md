@@ -82,8 +82,19 @@ The full framework architecture and roadmap are in the
 
 ## Features
 
-| Panel | What it shows |
+Three views, each headed by the **truth bar**. The bar states four facts the tower can vouch for: the archive is readable, the tape is well-formed, the bus is connected, and each capture is live. It also shows how far the tape trails the archive, per venue, whenever that is more than a minute. Amber appears there and nowhere else. The record itself is never colour-judged.
+
+| View | What it shows |
 |---|---|
+| **Overview** `#/` | a tile per instrument (price from the archive's tail, change and sparkline from the tape), a venue × dataset board, and a timeline of held rows, gaps by cause, backfilled spans, and what the archive holds that the tape does not yet |
+| **Markets** `#/m/<venue>/<ticker>` | the instruments, the current price and spread, a `lightweight-charts` candle chart at 1m/5m/15m/1h with volume and hatched backfill spans, the record's facts, the venue's live facts and the newest tape quotes |
+| **Record** `#/record` | segments per kind and day (open, closed and holding, or compacted), rows per hour per venue, gaps by cause, parse failures and the roots |
+
+One `<Panel>` renders every read's four states: refused, reading, empty and ready. Each section sits in its own error boundary.
+
+The screen does not poll. Tape-derived panels refetch when the server says the tape moved. The latest prices refetch when the archive moves, at most every two seconds.
+
+---|---|
 | **Live** | every venue's own account of itself and the broker's reachability, streamed over SSE |
 | **Instruments** | every instrument the record holds, with its age and row count; no broker needed |
 | **Partitions** | the partitions the record holds |
@@ -166,6 +177,7 @@ All configuration is through environment variables:
 | `GALATA_TAPE` | `var/tape` | the tape root, which `galata-tape-rebuild` writes beside the archive |
 | `GALATA_TOWER_LISTEN` | `127.0.0.1:8777` | the address to serve on |
 | `GALATA_BROKER` | `127.0.0.1:4222` | the NATS server that carries `status.>` |
+| `GALATA_CONFIG` | `config/datawatch.toml` | the datawatch configuration, read for each venue's normaliser so `/v1/latest` can decode the archive's tail |
 
 Both addresses default to loopback. Serving other machines, and reaching
 another machine's bus, are deployment decisions, made by setting these
@@ -182,7 +194,7 @@ Every route answers from `galata-segments`' own listings and the record's
 datasets:
 
 ```text
-  GET /v1/about        the archive root, and the tape columns a read can prune on
+  GET /v1/about        both roots, each one's frontier per venue, and the tape columns a read can prune on
   GET /v1/partitions   the partitions the record holds
   GET /v1/overdue      closed days still holding more segments than compaction left
   GET /v1/gaps         what the record says is missing, by cause
@@ -193,6 +205,10 @@ datasets:
   GET /v1/status       live state, as server-sent events: venue status, the
                        broker's reachability, and when the record advances
   GET /v1/tape/{kind}  a window of one dataset, bounded by what is durable
+  GET /v1/latest       the newest quote and trade per instrument, from the archive's tail
+  GET /v1/timeline     each venue and dataset as intervals: held, gaps by cause, backfilled, archive-only
+  GET /v1/candles      one instrument's candles, folded and resampled on the server
+  GET /v1/board        tape rows, archive segments today, coverage and gap rows per venue and dataset
 ```
 
 - **Decimals are sent as strings.** Every price and size in the tape is

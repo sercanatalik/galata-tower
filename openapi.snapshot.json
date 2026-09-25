@@ -28,6 +28,117 @@
         }
       }
     },
+    "/v1/board": {
+      "get": {
+        "summary": "Every venue and dataset the tape holds, as the Overview's grid.",
+        "operationId": "board",
+        "responses": {
+          "200": {
+            "description": "Tape rows, archive segments today, coverage and gap rows per venue and dataset",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Datasets"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The tape could not be read",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/candles": {
+      "get": {
+        "summary": "One instrument's candles, folded and resampled on the server.",
+        "operationId": "candles",
+        "parameters": [
+          {
+            "name": "venue",
+            "in": "query",
+            "description": "The venue.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ticker",
+            "in": "query",
+            "description": "The instrument.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "interval",
+            "in": "query",
+            "description": "1m, 5m, 15m or 1h.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "Start, venue micros, inclusive. Defaults to the beginning.",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "End, venue micros, exclusive. Defaults to the end.",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Bars, oldest first, each marked if a backfill sent it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Candles"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "An unknown interval, or a window that runs backwards",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/coverage": {
       "get": {
         "summary": "How much of each day the record holds.",
@@ -161,6 +272,25 @@
         }
       }
     },
+    "/v1/latest": {
+      "get": {
+        "summary": "Every venue's newest prices, read from the archive's tail.",
+        "description": "Not the tape, which may be days behind, and not the bus, which the tower may not read market data from.",
+        "operationId": "latest_prices",
+        "responses": {
+          "200": {
+            "description": "The newest quote and trade per instrument, from the archive",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Latest"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/overdue": {
       "get": {
         "summary": "Closed days still holding more segments than compaction should have left.",
@@ -201,6 +331,7 @@
     "/v1/partitions": {
       "get": {
         "summary": "The partitions the record holds.",
+        "description": "A walk that cannot run is a refusal naming the root, never an empty list.",
         "operationId": "partitions",
         "responses": {
           "200": {
@@ -212,6 +343,16 @@
                   "items": {
                     "$ref": "#/components/schemas/Partition"
                   }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The archive root could not be listed",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -356,6 +497,34 @@
           }
         }
       }
+    },
+    "/v1/timeline": {
+      "get": {
+        "summary": "The record over time: held runs, recorded gaps, backfills, and what only the archive holds.",
+        "operationId": "timeline",
+        "responses": {
+          "200": {
+            "description": "Each venue and dataset as intervals",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Timeline"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The tape could not be read",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -367,12 +536,20 @@
           "archive",
           "tape",
           "prune_on",
-          "tape_problems"
+          "tape_problems",
+          "frontiers"
         ],
         "properties": {
           "archive": {
             "$ref": "#/components/schemas/Root",
             "description": "The archive root being watched."
+          },
+          "frontiers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VenueFrontier"
+            },
+            "description": "Each root's newest arrival per venue. Their difference is how far the tape lags the archive."
           },
           "prune_on": {
             "type": "array",
@@ -391,6 +568,95 @@
               "type": "string"
             },
             "description": "What is wrong with the tape's layout, in `galata-datawatch`'s own words.\n\n**Empty is the normal case and the interesting one is not.** A tape\nholding two segments whose sequence ranges overlap serves the overlap\nTWICE, and every figure derived from it is inflated. Measured on the\nreal tape on 2026-09-23: this tower reported 108,098 rows where the\nrebuild had written 107,312 — two stale segments, superseded by a later\nrebuild that wrote wider ranges and left the narrow ones behind, which\nis exactly what `galata-tape-rebuild --help` warns about.\n\n`galata-tape-rebuild` has printed this on every run since it was\nwritten. This tower links the same crate, serves the same tape, and\nnever asked."
+          }
+        }
+      },
+      "ArchiveLane": {
+        "type": "object",
+        "description": "One venue's archive over time.",
+        "required": [
+          "venue",
+          "spans"
+        ],
+        "properties": {
+          "spans": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Span"
+            },
+            "description": "Runs of arrival time the archive holds segments for."
+          },
+          "venue": {
+            "type": "string",
+            "description": "The venue."
+          }
+        }
+      },
+      "ArchiveMoved": {
+        "type": "object",
+        "description": "A venue's archive frontier moved.",
+        "required": [
+          "venue",
+          "frontier_micros"
+        ],
+        "properties": {
+          "frontier_micros": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The newest arrival it now holds, our clock."
+          },
+          "venue": {
+            "type": "string",
+            "description": "Whose archive."
+          }
+        }
+      },
+      "Bar": {
+        "type": "object",
+        "description": "One bar. Prices and sizes are decimal strings.",
+        "required": [
+          "at_micros",
+          "open",
+          "high",
+          "low",
+          "close",
+          "volume",
+          "backfilled",
+          "is_final"
+        ],
+        "properties": {
+          "at_micros": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The bar's open time, venue micros."
+          },
+          "backfilled": {
+            "type": "boolean",
+            "description": "Whether any minute in it arrived by a backfill."
+          },
+          "close": {
+            "type": "string",
+            "description": "Last close."
+          },
+          "high": {
+            "type": "string",
+            "description": "Highest high."
+          },
+          "is_final": {
+            "type": "boolean",
+            "description": "Whether every minute in it had closed."
+          },
+          "low": {
+            "type": "string",
+            "description": "Lowest low."
+          },
+          "open": {
+            "type": "string",
+            "description": "First open."
+          },
+          "volume": {
+            "type": "string",
+            "description": "Summed volume."
           }
         }
       },
@@ -464,6 +730,42 @@
           }
         }
       },
+      "Candles": {
+        "type": "object",
+        "description": "One instrument's candles at one interval.",
+        "required": [
+          "venue",
+          "ticker",
+          "interval",
+          "bars",
+          "capped"
+        ],
+        "properties": {
+          "bars": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Bar"
+            },
+            "description": "Oldest first."
+          },
+          "capped": {
+            "type": "boolean",
+            "description": "Whether older bars were left out to stay under the cap."
+          },
+          "interval": {
+            "type": "string",
+            "description": "The interval, as asked."
+          },
+          "ticker": {
+            "type": "string",
+            "description": "The instrument."
+          },
+          "venue": {
+            "type": "string",
+            "description": "The venue."
+          }
+        }
+      },
       "Cause": {
         "type": "object",
         "description": "What one cause accounts for, over a window.",
@@ -533,6 +835,63 @@
           }
         }
       },
+      "Cell": {
+        "type": "object",
+        "description": "One `(venue, dataset)` cell of the Overview board.",
+        "required": [
+          "venue",
+          "kind",
+          "tape_rows",
+          "covered_micros",
+          "window_micros",
+          "gap_rows"
+        ],
+        "properties": {
+          "archive_today": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Segments in the archive's partition for today, or null where the archive keeps no such kind.",
+            "minimum": 0
+          },
+          "coverage_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The newest day the tape covers for it, if any."
+          },
+          "covered_micros": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Micros held on that day."
+          },
+          "gap_rows": {
+            "type": "integer",
+            "description": "Gap rows the record wrote against this dataset.",
+            "minimum": 0
+          },
+          "kind": {
+            "type": "string",
+            "description": "The dataset."
+          },
+          "tape_rows": {
+            "type": "integer",
+            "description": "Rows the tape holds.",
+            "minimum": 0
+          },
+          "venue": {
+            "type": "string",
+            "description": "The venue."
+          },
+          "window_micros": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Micros that day accounts for."
+          }
+        }
+      },
       "Coverage": {
         "type": "object",
         "description": "The record's gaps over a window, by cause.",
@@ -592,6 +951,27 @@
               "$ref": "#/components/schemas/DayCoverage"
             },
             "description": "Newest day first."
+          }
+        }
+      },
+      "Datasets": {
+        "type": "object",
+        "description": "Every `(venue, dataset)` the tape holds, as one read.",
+        "required": [
+          "today",
+          "cells"
+        ],
+        "properties": {
+          "cells": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Cell"
+            },
+            "description": "Venue-major, dataset order as served."
+          },
+          "today": {
+            "type": "string",
+            "description": "The UTC day `archive_today` counts."
           }
         }
       },
@@ -742,6 +1122,31 @@
           }
         }
       },
+      "GapSpan": {
+        "type": "object",
+        "description": "One recorded gap interval.",
+        "required": [
+          "cause",
+          "from",
+          "to"
+        ],
+        "properties": {
+          "cause": {
+            "type": "string",
+            "description": "The cause, as the capture wrote it."
+          },
+          "from": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Start, in micros."
+          },
+          "to": {
+            "type": "integer",
+            "format": "int64",
+            "description": "End, in micros."
+          }
+        }
+      },
       "HourlyRows": {
         "type": "object",
         "description": "One hour of one dataset.",
@@ -845,6 +1250,83 @@
           }
         }
       },
+      "Lane": {
+        "type": "object",
+        "description": "One `(venue, dataset)` over time.",
+        "required": [
+          "venue",
+          "kind",
+          "held",
+          "gaps",
+          "backfilled"
+        ],
+        "properties": {
+          "archive_only": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Span",
+                "description": "What the archive holds beyond this lane's tape, if anything."
+              }
+            ]
+          },
+          "backfilled": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Span"
+            },
+            "description": "Runs of bars that arrived late, sent by a backfill."
+          },
+          "gaps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GapSpan"
+            },
+            "description": "Recorded gaps, merged within each cause."
+          },
+          "held": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Span"
+            },
+            "description": "Runs of receipt time that hold rows."
+          },
+          "kind": {
+            "type": "string",
+            "description": "The dataset."
+          },
+          "venue": {
+            "type": "string",
+            "description": "The venue."
+          }
+        }
+      },
+      "Latest": {
+        "type": "object",
+        "description": "Every venue's newest prices, and why any venue has none.",
+        "required": [
+          "venues",
+          "refusals"
+        ],
+        "properties": {
+          "refusals": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Why a declared venue is not priced."
+          },
+          "venues": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/VenuePrices"
+            },
+            "description": "One entry per venue with a normaliser and an archive."
+          }
+        }
+      },
       "Overdue": {
         "type": "object",
         "description": "A closed day still holding more segments than compaction should have left.\n\n**Reported, never judged.** The number is here; whether it is bad belongs to\nwhoever set the threshold.",
@@ -868,12 +1350,105 @@
         "type": "object",
         "description": "One partition of the record, as the store lists it.",
         "required": [
-          "path"
+          "path",
+          "segments"
         ],
         "properties": {
           "path": {
             "type": "string",
             "description": "Its path relative to the archive root."
+          },
+          "segments": {
+            "type": "integer",
+            "description": "How many segments it holds now. Counted on every read, since an open day grows.",
+            "minimum": 0
+          }
+        }
+      },
+      "Price": {
+        "type": "object",
+        "description": "One instrument's newest quote and trade. Prices and sizes are decimal strings.",
+        "required": [
+          "ticker"
+        ],
+        "properties": {
+          "ask": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Best ask."
+          },
+          "ask_size": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Ask size."
+          },
+          "bid": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Best bid."
+          },
+          "bid_size": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Bid size."
+          },
+          "last": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Last trade price."
+          },
+          "last_size": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Last trade size."
+          },
+          "quote_at_micros": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The quote's venue time."
+          },
+          "quote_recv_micros": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When the quote arrived, our clock."
+          },
+          "ticker": {
+            "type": "string",
+            "description": "The instrument."
+          },
+          "trade_at_micros": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The trade's venue time."
+          },
+          "trade_recv_micros": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When the trade arrived, our clock."
           }
         }
       },
@@ -950,6 +1525,26 @@
           }
         }
       },
+      "Span": {
+        "type": "object",
+        "description": "A half-open span of receipt time.",
+        "required": [
+          "from",
+          "to"
+        ],
+        "properties": {
+          "from": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Start, in micros."
+          },
+          "to": {
+            "type": "integer",
+            "format": "int64",
+            "description": "End, in micros."
+          }
+        }
+      },
       "TapeMoved": {
         "type": "object",
         "description": "One venue's tape for one kind has a new durable bound.\n\nPer venue, because each venue numbers its own stream: one event per venue\nthat moved, rather than a kind's whole map re-sent for the browser to diff.",
@@ -971,6 +1566,93 @@
           "venue": {
             "type": "string",
             "description": "Whose stream moved."
+          }
+        }
+      },
+      "Timeline": {
+        "type": "object",
+        "description": "The record over time, as the Overview draws it.",
+        "required": [
+          "lanes",
+          "archive"
+        ],
+        "properties": {
+          "archive": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ArchiveLane"
+            },
+            "description": "One lane per venue the archive holds."
+          },
+          "lanes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Lane"
+            },
+            "description": "One lane per `(venue, dataset)` the tape holds, gaps excluded."
+          }
+        }
+      },
+      "VenueFrontier": {
+        "type": "object",
+        "description": "One venue's frontier in each root. Both are arrival times on this machine's clock.",
+        "required": [
+          "venue"
+        ],
+        "properties": {
+          "archive_micros": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The newest arrival the archive holds, or null."
+          },
+          "tape_micros": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The newest arrival the tape holds, or null."
+          },
+          "venue": {
+            "type": "string",
+            "description": "The venue."
+          }
+        }
+      },
+      "VenuePrices": {
+        "type": "object",
+        "description": "One venue's newest prices.",
+        "required": [
+          "venue",
+          "frontier_micros",
+          "window_secs",
+          "prices"
+        ],
+        "properties": {
+          "frontier_micros": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The newest arrival its archive holds, our clock."
+          },
+          "prices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Price"
+            },
+            "description": "Every declared instrument, priced or not."
+          },
+          "venue": {
+            "type": "string",
+            "description": "The venue."
+          },
+          "window_secs": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How far back from the frontier was searched.",
+            "minimum": 0
           }
         }
       },
