@@ -9,6 +9,8 @@ import {
   type FoldReport,
   model,
   pairKey,
+  SHOCKS,
+  shock,
   type Statistics,
   value,
 } from '../data/risk'
@@ -100,9 +102,12 @@ function Risk({ exposures, stats }: { exposures: Exposures; stats: Statistics })
   }
   if (m.kind === 'absent') {
     return (
-      <p>
-        One-day VaR is not computed: <strong>{m.missing}</strong> is below its floor. <span className="muted">{label}</span>
-      </p>
+      <div>
+        <p>
+          One-day VaR is not computed: <strong>{m.missing}</strong> is below its floor. <span className="muted">{label}</span>
+        </p>
+        <Shocks exposures={exposures} stats={stats} />
+      </div>
     )
   }
   return (
@@ -130,6 +135,45 @@ function Risk({ exposures, stats }: { exposures: Exposures; stats: Statistics })
               <td>{(s.share * 100).toFixed(1)}%{s.share < 0 ? ' · a hedge' : ''}</td>
             </tr>
           ))}
+        </tbody>
+      </table>
+      <Shocks exposures={exposures} stats={stats} />
+    </div>
+  )
+}
+
+/** The board's five shocks: one leg moves, the others follow by β. Signed, in ink. */
+function Shocks({ exposures, stats }: { exposures: Exposures; stats: Statistics }) {
+  const shown = SHOCKS.filter((s) => s.ticker in stats.volatility)
+  if (shown.length === 0) return null
+  return (
+    <div>
+      <h3>Shocks, through β</h3>
+      <p className="muted">one leg moves, the others follow by β on it, from the same σ and ρ</p>
+      <table className="grid mono">
+        <thead>
+          <tr>
+            <th scope="col">shock</th>
+            <th scope="col">P&amp;L, modelled</th>
+          </tr>
+        </thead>
+        <tbody>
+          {shown.map((s) => {
+            const r = shock(exposures, stats, s.ticker, s.move)
+            const label = `${s.ticker} ${s.move > 0 ? '+' : '−'}${Math.abs(s.move * 100).toFixed(0)}%`
+            return (
+              <tr key={label}>
+                <td>{label}</td>
+                <td>
+                  {r.kind === 'absent' ? (
+                    <span className="muted">— {r.missing} is below its floor</span>
+                  ) : (
+                    `${r.pnl < 0 ? '−' : '+'}$${Math.abs(r.pnl).toFixed(0)}`
+                  )}
+                </td>
+              </tr>
+            )
+          })}
         </tbody>
       </table>
     </div>

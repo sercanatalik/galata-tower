@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { model, type Statistics } from './risk'
+import { model, shock, type Statistics } from './risk'
 
 const v = (value: number) => ({ value: { value, n: 65, backfilled_share: 1 } })
 
@@ -49,5 +49,39 @@ describe('the modelled figures', () => {
     if (m.kind !== 'modelled') throw new Error(m.missing)
     expect(m.shares.find((s) => s.ticker === 'ETH')!.share).toBeLessThan(0)
     expect(m.shares.reduce((a, s) => a + s.share, 0)).toBeCloseTo(1, 12)
+  })
+})
+
+describe('shocks, through β', () => {
+  it('moves each held leg by its β on the shocked one', () => {
+    const s = shock(
+      { source: 'held', items: [{ ticker: 'BTC', usd: 100 }, { ticker: 'ETH', usd: 200 }] },
+      stats,
+      'BTC',
+      -0.1,
+    )
+    if (s.kind !== 'modelled') throw new Error(s.missing)
+    expect(s.pnl).toBeCloseTo(100 * -0.1 + 200 * ((0.7 * 0.58) / 0.5) * -0.1, 12)
+  })
+
+  it('a leg not held moves nothing', () => {
+    const s = shock({ source: 'hypothetical', items: [{ ticker: 'ETH', usd: 50 }] }, stats, 'BTC', 0.1)
+    if (s.kind !== 'modelled') throw new Error(s.missing)
+    expect(s.pnl).toBeCloseTo(50 * ((0.7 * 0.58) / 0.5) * 0.1, 12)
+    expect(s.source).toBe('hypothetical')
+  })
+
+  it('an absent correlation makes the shock absent, naming the pair', () => {
+    const thin: Statistics = {
+      ...stats,
+      correlation: { 'BTC|ETH': { rho: { absent: { instrument: 'ETH', count: 3, floor: 20 } }, interval: null } },
+    }
+    const s = shock({ source: 'held', items: [{ ticker: 'ETH', usd: 1 }] }, thin, 'BTC', -0.1)
+    expect(s).toEqual({ kind: 'absent', source: 'held', missing: 'ρ of BTC|ETH' })
+  })
+
+  it('a shock on a leg with no σ is absent', () => {
+    const s = shock({ source: 'held', items: [{ ticker: 'BTC', usd: 1 }] }, stats, 'GOLD', -0.05)
+    expect(s).toEqual({ kind: 'absent', source: 'held', missing: 'σ of GOLD' })
   })
 })

@@ -149,3 +149,45 @@ export function model(exposures: Exposures, stats: Statistics): Modelled {
     })),
   }
 }
+
+/** A shock's result: the book's P&L, or the input that was missing. */
+export type Shocked =
+  | { kind: 'modelled'; source: Source; pnl: number }
+  | { kind: 'absent'; source: Source; missing: string }
+
+/**
+ * Move `ticker` by `move` (a fraction, −0.10 for −10 %) and every held leg by
+ * its β on it: `β(m,k) = ρ(m,k)·σ(m)/σ(k)`, the expected move of `m` given
+ * `k`'s under the same joint normal the VaR assumes, from the same σ and ρ.
+ *
+ * **Absent** when the shocked leg's σ, or a held leg's σ or ρ with it, is
+ * missing, naming which. The shocked leg has β 1 and needs no ρ.
+ */
+export function shock(exposures: Exposures, stats: Statistics, ticker: string, move: number): Shocked {
+  const source = exposures.source
+  const held = exposures.items.filter((e) => e.usd !== 0)
+  const sk = value(stats.volatility[ticker])
+  if (sk === null) return { kind: 'absent', source, missing: `σ of ${ticker}` }
+  let pnl = 0
+  for (const e of held) {
+    if (e.ticker === ticker) {
+      pnl += e.usd * move
+      continue
+    }
+    const sm = value(stats.volatility[e.ticker])
+    if (sm === null) return { kind: 'absent', source, missing: `σ of ${e.ticker}` }
+    const r = value(stats.correlation[pairKey(e.ticker, ticker)]?.rho)
+    if (r === null) return { kind: 'absent', source, missing: `ρ of ${pairKey(e.ticker, ticker)}` }
+    pnl += e.usd * ((r * sm) / sk) * move
+  }
+  return { kind: 'modelled', source, pnl }
+}
+
+/** The redesign board's five shocks: one leg moves, the others follow by β. */
+export const SHOCKS: { ticker: string; move: number }[] = [
+  { ticker: 'BTC', move: -0.1 },
+  { ticker: 'BTC', move: 0.1 },
+  { ticker: 'ETH', move: -0.15 },
+  { ticker: 'CL', move: 0.1 },
+  { ticker: 'GOLD', move: -0.05 },
+]
