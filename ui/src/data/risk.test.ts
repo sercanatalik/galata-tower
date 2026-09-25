@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { model, shock, type Statistics } from './risk'
+import { model, pairs, shock, type Statistics } from './risk'
 
 const v = (value: number) => ({ value: { value, n: 65, backfilled_share: 1 } })
 
@@ -83,5 +83,40 @@ describe('shocks, through β', () => {
   it('a shock on a leg with no σ is absent', () => {
     const s = shock({ source: 'held', items: [{ ticker: 'BTC', usd: 1 }] }, stats, 'GOLD', -0.05)
     expect(s).toEqual({ kind: 'absent', source: 'held', missing: 'σ of GOLD' })
+  })
+})
+
+describe('diversification and the pairs that matter', () => {
+  it('two legs that do not move together diversify', () => {
+    const m = model(
+      { source: 'held', items: [{ ticker: 'BTC', usd: 100 }, { ticker: 'ETH', usd: 100 }] },
+      stats,
+    )
+    if (m.kind !== 'modelled') throw new Error(m.missing)
+    expect(m.undiversified95).toBeGreaterThan(m.var95)
+    expect(m.ratio).toBeGreaterThan(1)
+    expect(m.undiversified95).toBeCloseTo((1.645 * (100 * 0.5 + 100 * 0.58)) / Math.sqrt(365), 9)
+  })
+
+  it('one leg is not diversified', () => {
+    const m = model({ source: 'held', items: [{ ticker: 'BTC', usd: -100 }] }, stats)
+    if (m.kind !== 'modelled') throw new Error(m.missing)
+    expect(m.ratio).toBeCloseTo(1, 12)
+  })
+
+  it('an absent pair is left out of an average, and never named', () => {
+    const three: Statistics = {
+      ...stats,
+      volatility: { ...stats.volatility, HYPE: v(0.7) },
+      correlation: {
+        'BTC|ETH': { rho: v(0.8), interval: null },
+        'BTC|HYPE': { rho: v(0.4), interval: null },
+        'ETH|HYPE': { rho: { absent: { instrument: 'HYPE', count: 3, floor: 20 } }, interval: null },
+      },
+    }
+    const p = pairs(three)
+    expect(p.block).toEqual({ mean: (0.8 + 0.4) / 2, over: 2, of: 3 })
+    expect(p.alike?.pair).toBe('BTC|ETH')
+    expect(p.hedge?.pair).toBe('BTC|HYPE')
   })
 })

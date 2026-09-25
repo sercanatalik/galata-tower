@@ -9,6 +9,7 @@ import {
   type FoldReport,
   model,
   pairKey,
+  pairs,
   SHOCKS,
   shock,
   type Statistics,
@@ -59,38 +60,60 @@ function CellText({ cell, dp = 2 }: { cell: Cell | undefined; dp?: number }) {
   )
 }
 
+/** The matrix's extremes and averages, among pairs with a figure. */
+function PairsThatMatter({ stats }: { stats: Statistics }) {
+  const p = pairs(stats)
+  const avg = (a: { mean: number | null; over: number; of: number }) =>
+    a.mean === null ? '— none has a figure' : `avg ${a.mean.toFixed(2)} of ${a.over}${a.over < a.of ? ` (${a.of - a.over} below floor)` : ''}`
+  return (
+    <dl className="facts mono">
+      <dt>most alike</dt>
+      <dd>{p.alike ? `${p.alike.pair.replace('|', ' / ')} · ${p.alike.rho.toFixed(2)}, n ${p.alike.n}` : '—'}</dd>
+      <dt>strongest hedge</dt>
+      <dd>{p.hedge ? `${p.hedge.pair.replace('|', ' / ')} · ${p.hedge.rho.toFixed(2)}, n ${p.hedge.n}` : '—'}</dd>
+      <dt>crypto block · BTC ETH HYPE</dt>
+      <dd>{avg(p.block)}</dd>
+      <dt>all pairs</dt>
+      <dd>{avg(p.all)}</dd>
+    </dl>
+  )
+}
+
 function Matrix({ stats }: { stats: Statistics }) {
   const tickers = Object.keys(stats.volatility)
   return (
-    <table className="grid mono">
-      <thead>
-        <tr>
-          <th scope="col" />
-          {tickers.map((t) => (
-            <th key={t} scope="col">{t}</th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {tickers.map((a) => (
-          <tr key={a}>
-            <th scope="row">{a}</th>
-            {tickers.map((b) => {
-              if (a === b) return <td key={b} className="muted">1</td>
-              const pair = stats.correlation[pairKey(a, b)]
-              return (
-                <td
-                  key={b}
-                  title={pair?.interval ? `interval [${pair.interval.low.toFixed(2)}, ${pair.interval.high.toFixed(2)}]` : undefined}
-                >
-                  <CellText cell={pair?.rho} />
-                </td>
-              )
-            })}
+    <div>
+      <table className="grid mono">
+        <thead>
+          <tr>
+            <th scope="col" />
+            {tickers.map((t) => (
+              <th key={t} scope="col">{t}</th>
+            ))}
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {tickers.map((a) => (
+            <tr key={a}>
+              <th scope="row">{a}</th>
+              {tickers.map((b) => {
+                if (a === b) return <td key={b} className="muted">1</td>
+                const pair = stats.correlation[pairKey(a, b)]
+                return (
+                  <td
+                    key={b}
+                    title={pair?.interval ? `interval [${pair.interval.low.toFixed(2)}, ${pair.interval.high.toFixed(2)}]` : undefined}
+                  >
+                    <CellText cell={pair?.rho} />
+                  </td>
+                )
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <PairsThatMatter stats={stats} />
+    </div>
   )
 }
 
@@ -120,6 +143,12 @@ function Risk({ exposures, stats }: { exposures: Exposures; stats: Statistics })
         <dd>${m.var95.toFixed(0)}</dd>
         <dt>VaR 99%</dt>
         <dd>${m.var99.toFixed(0)}</dd>
+        <dt>undiversified, 95%</dt>
+        <dd>${m.undiversified95.toFixed(0)}</dd>
+        <dt>diversification benefit</dt>
+        <dd>${(m.undiversified95 - m.var95).toFixed(0)}</dd>
+        <dt>diversification</dt>
+        <dd title="sum of solo σ ÷ portfolio σ">{m.ratio.toFixed(2)}×</dd>
       </dl>
       <table className="grid mono">
         <thead>

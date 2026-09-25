@@ -98,6 +98,10 @@ export type Modelled =
       sigmaDay: number
       var95: number
       var99: number
+      /** 95 % VaR were every pair to move together (ρ = 1): `1.645·Σ|Nₖ|σₖ`. */
+      undiversified95: number
+      /** Sum of solo one-day σ over portfolio one-day σ; 1 when ρ is 1 throughout. */
+      ratio: number
       /** Each exposure's share of portfolio variance; negative is a hedge. */
       shares: { ticker: string; share: number }[]
     }
@@ -137,12 +141,15 @@ export function model(exposures: Exposures, stats: Statistics): Modelled {
     }
   }
   const sigmaDay = Math.sqrt(Math.max(variance, 0))
+  const soloSum = held.reduce((a, e, i) => a + Math.abs(e.usd) * sigma[i], 0)
   return {
     kind: 'modelled',
     source,
     sigmaDay,
     var95: 1.645 * sigmaDay,
     var99: 2.326 * sigmaDay,
+    undiversified95: 1.645 * soloSum,
+    ratio: sigmaDay > 0 ? soloSum / sigmaDay : 1,
     shares: held.map((e, i) => ({
       ticker: e.ticker,
       share: variance > 0 ? (e.usd * marginal[i]) / variance : 0,
@@ -191,3 +198,61 @@ export const SHOCKS: { ticker: string; move: number }[] = [
   { ticker: 'CL', move: 0.1 },
   { ticker: 'GOLD', move: -0.05 },
 ]
+
+/** A pair with a figure. */
+export interface Named {
+  pair: string
+  rho: number
+  n: number
+}
+
+/** A mean of ρ over the pairs that have a figure, and how many those were. */
+export interface Averaged {
+  mean: number | null
+  over: number
+  of: number
+}
+
+/** The pairs that matter: extremes among figures, and counted averages. */
+export interface PairsSummary {
+  alike: Named | null
+  hedge: Named | null
+  block: Averaged
+  all: Averaged
+}
+
+/** The redesign board's crypto block. */
+export const CRYPTO_BLOCK = ['BTC', 'ETH', 'HYPE']
+
+/**
+ * **Extremes are among figures only**, so a pair below its floor is never
+ * named; **averages omit absent pairs** and say how many they averaged, so a
+ * missing ρ is never read as zero.
+ */
+export function pairs(stats: Statistics): PairsSummary {
+  const named: Named[] = []
+  for (const [pair, p] of Object.entries(stats.correlation)) {
+    if ('value' in p.rho) named.push({ pair, rho: p.rho.value.value, n: p.rho.value.n })
+  }
+  const average = (keys: string[]): Averaged => {
+    const got = named.filter((x) => keys.includes(x.pair))
+    return {
+      mean: got.length ? got.reduce((a, x) => a + x.rho, 0) / got.length : null,
+      over: got.length,
+      of: keys.length,
+    }
+  }
+  const blockKeys: string[] = []
+  for (let i = 0; i < CRYPTO_BLOCK.length; i++)
+    for (let j = i + 1; j < CRYPTO_BLOCK.length; j++) {
+      const k = pairKey(CRYPTO_BLOCK[i], CRYPTO_BLOCK[j])
+      if (k in stats.correlation) blockKeys.push(k)
+    }
+  const byRho = [...named].sort((a, b) => a.rho - b.rho)
+  return {
+    alike: byRho.at(-1) ?? null,
+    hedge: byRho[0] ?? null,
+    block: average(blockKeys),
+    all: average(Object.keys(stats.correlation)),
+  }
+}
