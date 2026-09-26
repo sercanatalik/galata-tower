@@ -130,14 +130,15 @@ pub fn bounds(root: &Path, labels: &galata_datawatch::tape::LabelCache) -> Bound
     for kind in SERVED {
         let scope = format!("kind={}", kind.as_str());
         let scopes = [scope.as_str()];
-        if !galata_datawatch::tape::reader::unwritten(root, &scopes).is_empty() {
-            continue;
-        }
-        // A root that is not there, or a store that will not open, is silence
-        // here. The caller decides whether silence is worth a log line; doing
-        // it here would do it once a second.
-        // Through the watch's cache: a label is a footer read, and this runs
-        // every second over a tape that only ever grows.
+        // A kind that has written nothing, a root that is not there, or a
+        // store that will not open is silence here: `open_cached` refuses an
+        // unwritten scope itself, so asking `unwritten` first only walked the
+        // whole kind a second time (28 ms a second over 2,230 candle
+        // partitions, measured 2026-09-26). The caller decides whether
+        // silence is worth a log line; doing it here would do it once a
+        // second.
+        // Through the watch's cache: footers and directory listings are read
+        // once, and this runs every second over a tape that only ever grows.
         if let Ok(reader) =
             galata_datawatch::tape::reader::Reader::open_cached(root, &scopes, labels)
         {
