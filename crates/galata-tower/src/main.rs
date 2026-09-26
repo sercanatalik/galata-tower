@@ -1525,6 +1525,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         print!("{}", dump_openapi()?);
         return Ok(());
     }
+    // Exits before anything is started. The installer launches a freshly
+    // built tower once with this while the old one still serves, so macOS's
+    // first-launch assessment is paid then and not after the restart. Any
+    // other argument is ignored and the tower serves, which is why `--help`
+    // was not safe for that (datawatch vet-before-the-restart).
+    if std::env::args().nth(1).as_deref() == Some("--version") {
+        println!("galata-tower {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
 
     tracing_subscriber::fmt()
         .with_env_filter(
