@@ -25,7 +25,7 @@ const WIDEST_WINDOW: Duration = Duration::from_secs(900);
 const SHARED_FOR: Duration = Duration::from_secs(1);
 
 /// Accepts every declared venue; the tower builds normalisers only for those compiled in.
-struct Lenient;
+pub(crate) struct Lenient;
 
 impl Adapters for Lenient {
     fn supplies(&self, _venue: &str, _series: galata_wire::Series) -> bool {

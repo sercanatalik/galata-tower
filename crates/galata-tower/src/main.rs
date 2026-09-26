@@ -1532,7 +1532,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // was not safe for that (datawatch vet-before-the-restart).
     if std::env::args().nth(1).as_deref() == Some("--version") {
         println!("galata-tower {}", env!("CARGO_PKG_VERSION"));
+        // What a caller may safely ask this build. A tower without this line
+        // predates `--check-config`, and would serve if asked it.
+        println!("understands: --version --check-config --dump-openapi");
         return Ok(());
+    }
+    // Judges a configuration document with the tower's own rules and exits
+    // (datawatch check-a-config-before-writing-it). `--version` lists it, so
+    // a caller asks only a tower that says it understands.
+    if let Some(code) = galata_datawatch::config::check_requested(&latest::Lenient) {
+        std::process::exit(if code == std::process::ExitCode::SUCCESS { 0 } else { 1 });
     }
 
     tracing_subscriber::fmt()
