@@ -52,3 +52,13 @@ export function useStatistics(venue: string) {
 
 /** Every horizon's newest stored figures for a signal: computed by the flow, never here. */
 export const useSignals = (signal: string) => $api.useQuery('get', '/v1/signals', { params: { query: { signal } } })
+
+/** One stored signal's history for a pair and horizon, the last `days` of asofs. */
+export function useSignalHistory(signal: string, horizon: string | undefined, measure: string, ticker_i: string, ticker_j: string | null, days = 30) {
+  return $api.useQuery(
+    'get',
+    '/v1/signal-history',
+    { params: { query: { signal, horizon: horizon ?? '', measure, ticker_i, ...(ticker_j ? { ticker_j } : {}), days } } },
+    { enabled: !!horizon },
+  )
+}

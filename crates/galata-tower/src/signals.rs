@@ -196,6 +196,112 @@ pub fn latest(tape: &Path, signal: &str, now_micros: i64) -> Signals {
     }
 }
 
+/// The widest history one request may read: 90 days of asof partitions.
+pub const MAX_HISTORY_DAYS: i64 = 90;
+
+/// One signal's history for one pair.
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct HistoryQuery {
+    /// The signal: `varcov`, `beta`.
+    pub signal: String,
+    /// The horizon: `4h`.
+    pub horizon: String,
+    /// The measure: `correlation`, `covariance`, `beta`.
+    pub measure: String,
+    /// The first instrument, or `*` for a figure about all of them.
+    pub ticker_i: String,
+    /// The second, where the measure is about a pair.
+    pub ticker_j: Option<String>,
+    /// How many days of asofs, back from now. 30 when absent; at most 90.
+    pub days: Option<i64>,
+}
+
+/// One point of a history: a value, or why there is none.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct HistoryPoint {
+    /// The close the figure stands on.
+    pub asof_micros: i64,
+    /// When its latest computation was made.
+    pub computed_micros: i64,
+    /// The figure.
+    pub value: Option<f64>,
+    /// Why there is no figure.
+    pub absent: Option<String>,
+}
+
+/// A stored signal's history, as stored.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct History {
+    /// Oldest first; one point per asof.
+    pub points: Vec<HistoryPoint>,
+    /// The days read.
+    pub days: i64,
+}
+
+/// One series from the date partitions of the last `days`: per asof, its latest computation.
+pub fn history(tape: &Path, query: &HistoryQuery, now_micros: i64) -> Result<History, String> {
+    let days = query.days.unwrap_or(30);
+    if !(1..=MAX_HISTORY_DAYS).contains(&days) {
+        return Err(format!(
+            "days={days}: a history reads 1 to {MAX_HISTORY_DAYS} days"
+        ));
+    }
+    let root = tape.join(format!("kind={}", galata_wire::Kind::Signals));
+    let oldest = galata_datawatch::calendar::date_of(now_micros - days * DAY_MICROS);
+    let mut dates: Vec<String> = std::fs::read_dir(&root)
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .filter_map(|e| {
+                    e.file_name()
+                        .to_str()?
+                        .strip_prefix("date=")
+                        .map(str::to_string)
+                })
+                .filter(|date| *date >= oldest)
+                .collect()
+        })
+        .unwrap_or_default();
+    dates.sort_unstable();
+    let mut by_asof: BTreeMap<i64, Row> = BTreeMap::new();
+    for date in dates {
+        for (_, path) in galata_segments::list_segments(&root.join(format!("date={date}"))) {
+            let Ok(batches) = galata_segments::read_segment(&path) else {
+                continue;
+            };
+            for batch in &batches {
+                for row in rows(batch, &query.signal) {
+                    if row.horizon != query.horizon
+                        || row.cell.measure != query.measure
+                        || row.cell.ticker_i != query.ticker_i
+                        || row.cell.ticker_j != query.ticker_j
+                    {
+                        continue;
+                    }
+                    let newer = by_asof
+                        .get(&row.asof)
+                        .is_none_or(|kept| row.computed > kept.computed);
+                    if newer {
+                        by_asof.insert(row.asof, row);
+                    }
+                }
+            }
+        }
+    }
+    Ok(History {
+        points: by_asof
+            .into_values()
+            .map(|r| HistoryPoint {
+                asof_micros: r.asof,
+                computed_micros: r.computed,
+                value: r.cell.value,
+                absent: r.cell.absent,
+            })
+            .collect(),
+        days,
+    })
+}
+
 fn rows(batch: &RecordBatch, signal: &str) -> Vec<Row> {
     let text = |name: &str| {
         batch
@@ -418,6 +524,73 @@ mod tests {
                 Some("265 returns, under min_obs=500")
             );
         }
+    }
+
+    fn query(days: Option<i64>) -> HistoryQuery {
+        HistoryQuery {
+            signal: "varcov".into(),
+            horizon: "4h".into(),
+            measure: "correlation".into(),
+            ticker_i: "BTC".into(),
+            ticker_j: Some("ETH".into()),
+            days,
+        }
+    }
+
+    #[test]
+    fn a_repeated_computation_is_one_point() {
+        let tape = scratch("history-repeat");
+        run(&tape, "4h", MIDNIGHT, MIDNIGHT + 1, None);
+        run(
+            &tape,
+            "4h",
+            MIDNIGHT + 4 * HOUR,
+            MIDNIGHT + 4 * HOUR + 1,
+            None,
+        );
+        run(
+            &tape,
+            "4h",
+            MIDNIGHT + 4 * HOUR,
+            MIDNIGHT + 4 * HOUR + 9,
+            None,
+        );
+        let h = history(&tape, &query(None), MIDNIGHT + 5 * HOUR).unwrap();
+        assert_eq!(
+            h.points.iter().map(|p| p.asof_micros).collect::<Vec<_>>(),
+            vec![MIDNIGHT, MIDNIGHT + 4 * HOUR]
+        );
+        assert_eq!(h.points[1].computed_micros, MIDNIGHT + 4 * HOUR + 9);
+    }
+
+    #[test]
+    fn an_absent_figure_is_a_point_with_its_reason() {
+        let tape = scratch("history-absent");
+        run(
+            &tape,
+            "4h",
+            MIDNIGHT,
+            MIDNIGHT + 1,
+            Some("265 returns, under min_obs=500"),
+        );
+        let h = history(&tape, &query(None), MIDNIGHT + HOUR).unwrap();
+        assert_eq!(h.points.len(), 1);
+        assert_eq!(h.points[0].value, None);
+        assert_eq!(
+            h.points[0].absent.as_deref(),
+            Some("265 returns, under min_obs=500")
+        );
+    }
+
+    #[test]
+    fn a_window_wider_than_ninety_days_is_refused() {
+        let tape = scratch("history-wide");
+        assert!(
+            history(&tape, &query(Some(120)), MIDNIGHT)
+                .unwrap_err()
+                .contains("90")
+        );
+        assert!(history(&tape, &query(Some(0)), MIDNIGHT).is_err());
     }
 
     #[test]

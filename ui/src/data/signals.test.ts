@@ -1,6 +1,6 @@
 import { describe as group, expect, it } from 'vitest'
 
-import { annualisedSigma, betaOf, cellOf, describe, type HorizonFigures, universe } from './signals'
+import { annualisedSigma, betaOf, cellOf, chartPoints, describe, type HorizonFigures, universe } from './signals'
 
 const HOUR = 3_600_000_000
 const figures = (over: Partial<HorizonFigures> = {}): HorizonFigures => ({
@@ -63,5 +63,16 @@ group('the derived figures', () => {
     const line = universe(undefined, market([['mahalanobis', null, 'the covariance matrix is not positive definite']]), undefined, 6)
     expect(line).toContain('Mahalanobis absent (the covariance matrix is not positive definite)')
     expect(line).toContain('absorption absent (no figure for this horizon)')
+  })
+})
+
+group('the history chart', () => {
+  it('a gap is not a zero', () => {
+    const pts = chartPoints([
+      { asof_micros: 1_790_553_600_000_000, computed_micros: 1, value: 0.87, absent: null },
+      { asof_micros: 1_790_568_000_000_000, computed_micros: 2, value: null, absent: 'under min_obs' },
+    ])
+    expect(pts[0]).toEqual({ time: 1_790_553_600, value: 0.87 })
+    expect(pts[1]).toEqual({ time: 1_790_568_000 })
   })
 })

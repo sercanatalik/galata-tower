@@ -1,7 +1,7 @@
 import { useState } from 'react'
 
 import { dec, fmt, plot } from '../contract/money'
-import { PORTFOLIO_STATISTICS, useLatest, usePortfolio, useSignals, useStatistics } from '../data/queries'
+import { PORTFOLIO_STATISTICS, useLatest, usePortfolio, useSignalHistory, useSignals, useStatistics } from '../data/queries'
 import {
   type Cell,
   type Derived,
@@ -15,7 +15,8 @@ import {
   type Statistics,
   value,
 } from '../data/risk'
-import { annualisedSigma, betaOf, cellOf, describe, type HorizonFigures, universe } from '../data/signals'
+import { annualisedSigma, betaOf, cellOf, chartPoints, describe, type HorizonFigures, universe } from '../data/signals'
+import SignalChart from '../charts/SignalChart'
 import { forHumans, stamp } from '../kit/format'
 import { Head, Panel } from '../kit/Panel'
 import { shown } from './Overview'
@@ -165,6 +166,51 @@ function SignalMatrix({ h, beta }: { h: HorizonFigures; beta?: HorizonFigures })
   )
 }
 
+/** What the history chart can show: a pair's ρ or covariance, or an instrument's β to BTC. */
+const CHARTABLE: Array<{ label: string; signal: string; measure: string; pair: boolean }> = [
+  { label: 'ρ', signal: 'varcov', measure: 'correlation', pair: true },
+  { label: 'covariance', signal: 'varcov', measure: 'covariance', pair: true },
+  { label: 'β to BTC', signal: 'beta', measure: 'beta', pair: false },
+]
+
+function History({ h }: { h: HorizonFigures }) {
+  const [which, setWhich] = useState(0)
+  const [a, setA] = useState('BTC')
+  const [b, setB] = useState('ETH')
+  const pick = CHARTABLE[which]
+  const tickers = h.tickers
+  const history = useSignalHistory(pick.signal, h.horizon, pick.measure, pick.pair ? a : b, pick.pair ? b : 'BTC')
+  const points = history.data ? chartPoints(history.data.points) : []
+  const absent = history.data?.points.filter((p) => p.value == null).length ?? 0
+  return (
+    <div>
+      <p className="mono">
+        <select aria-label="measure" value={which} onChange={(e) => setWhich(e.currentTarget.selectedIndex)}>
+          {CHARTABLE.map((c, i) => (
+            <option key={c.label} value={i}>{c.label}</option>
+          ))}
+        </select>{' '}
+        {pick.pair ? (
+          <select aria-label="first" value={a} onChange={(e) => setA(e.currentTarget.value)}>
+            {tickers.map((t) => (
+              <option key={t}>{t}</option>
+            ))}
+          </select>
+        ) : null}{' '}
+        <select aria-label="second" value={b} onChange={(e) => setB(e.currentTarget.value)}>
+          {tickers.filter((t) => pick.pair || t !== 'BTC').map((t) => (
+            <option key={t}>{t}</option>
+          ))}
+        </select>{' '}
+        <span className="muted">
+          {h.horizon} · {history.data ? `${history.data.points.length} asofs over ${history.data.days} days${absent ? `, ${absent} absent (gaps)` : ''}` : 'reading'}
+        </span>
+      </p>
+      <SignalChart points={points} height={220} />
+    </div>
+  )
+}
+
 function Signals() {
   const signals = useSignals('varcov')
   const beta = useSignals('beta')
@@ -193,6 +239,7 @@ function Signals() {
             </p>
             <SignalMatrix h={h} beta={at(beta, h.horizon)} />
             <p className="mono">{universe(at(absorption, h.horizon), at(surprise, h.horizon), at(turbulence, h.horizon), h.tickers.length)}</p>
+            <History h={h} />
           </div>
         )
       }}

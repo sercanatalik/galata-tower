@@ -1,3 +1,5 @@
+import type { UTCTimestamp } from 'lightweight-charts'
+
 import type { components } from '../contract/api'
 import { forHumans, stamp } from '../kit/format'
 
@@ -60,4 +62,15 @@ export function universe(absorption: HorizonFigures | undefined, surprise: Horiz
     `turbulence ${said(figure(turbulence, 'turbulence'), (v) => v.toFixed(1))}, ${said(figure(turbulence, 'percentile'), pct)} of its sample`,
   ]
   return parts.join(' · ')
+}
+
+export type HistoryPoint = components['schemas']['HistoryPoint']
+export type ChartPoint = { time: UTCTimestamp; value: number } | { time: UTCTimestamp }
+
+/** The history as line points: a value where there is one, a whitespace point (a gap) where it is absent. */
+export function chartPoints(points: readonly HistoryPoint[]): ChartPoint[] {
+  return points.map((p) => {
+    const time = Math.floor(p.asof_micros / 1_000_000) as UTCTimestamp
+    return p.value != null ? { time, value: p.value } : { time }
+  })
 }

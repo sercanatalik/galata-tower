@@ -1464,6 +1464,33 @@ async fn stored_signals(
     }
 }
 
+/// One stored signal's history for one pair and horizon: per asof, its
+/// latest computation, as stored. At most 90 days.
+#[utoipa::path(
+    get,
+    path = "/v1/signal-history",
+    params(signals::HistoryQuery),
+    responses(
+        (status = 200, description = "One point per asof, oldest first, a value or why there is none", body = signals::History),
+        (status = 400, description = "A window outside 1 to 90 days", body = String),
+    ),
+)]
+async fn signal_history(
+    State(tower): State<Tower>,
+    Query(query): Query<signals::HistoryQuery>,
+) -> Response {
+    let tape = tower.tape.clone();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_micros() as i64)
+        .unwrap_or_default();
+    match tokio::task::spawn_blocking(move || signals::history(&tape, &query, now)).await {
+        Ok(Ok(found)) => Json(found).into_response(),
+        Ok(Err(refusal)) => (StatusCode::BAD_REQUEST, refusal).into_response(),
+        Err(join) => unfinished(join),
+    }
+}
+
 /// A read that panicked or was cancelled.
 fn unfinished(join: tokio::task::JoinError) -> Response {
     (
@@ -1517,6 +1544,7 @@ fn router(tower: Tower) -> (Router, utoipa::openapi::OpenApi) {
         .routes(routes!(portfolio_report))
         .routes(routes!(statistics))
         .routes(routes!(stored_signals))
+        .routes(routes!(signal_history))
         .with_state(tower)
         .split_for_parts()
 }

@@ -424,6 +424,97 @@
         }
       }
     },
+    "/v1/signal-history": {
+      "get": {
+        "summary": "One stored signal's history for one pair and horizon: per asof, its\nlatest computation, as stored. At most 90 days.",
+        "operationId": "signal_history",
+        "parameters": [
+          {
+            "name": "signal",
+            "in": "query",
+            "description": "The signal: `varcov`, `beta`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "horizon",
+            "in": "query",
+            "description": "The horizon: `4h`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "measure",
+            "in": "query",
+            "description": "The measure: `correlation`, `covariance`, `beta`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ticker_i",
+            "in": "query",
+            "description": "The first instrument, or `*` for a figure about all of them.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ticker_j",
+            "in": "query",
+            "description": "The second, where the measure is about a pair.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "days",
+            "in": "query",
+            "description": "How many days of asofs, back from now. 30 when absent; at most 90.",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One point per asof, oldest first, a value or why there is none",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/History"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A window outside 1 to 90 days",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/signals": {
       "get": {
         "summary": "Each horizon's newest stored figures for a signal, and whether each is\nstale by the tower's clock. Nothing is computed from them.",
@@ -1316,6 +1407,63 @@
             "type": "integer",
             "format": "int64",
             "description": "End, in micros."
+          }
+        }
+      },
+      "History": {
+        "type": "object",
+        "description": "A stored signal's history, as stored.",
+        "required": [
+          "points",
+          "days"
+        ],
+        "properties": {
+          "days": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The days read."
+          },
+          "points": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HistoryPoint"
+            },
+            "description": "Oldest first; one point per asof."
+          }
+        }
+      },
+      "HistoryPoint": {
+        "type": "object",
+        "description": "One point of a history: a value, or why there is none.",
+        "required": [
+          "asof_micros",
+          "computed_micros"
+        ],
+        "properties": {
+          "absent": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why there is no figure."
+          },
+          "asof_micros": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The close the figure stands on."
+          },
+          "computed_micros": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When its latest computation was made."
+          },
+          "value": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The figure."
           }
         }
       },

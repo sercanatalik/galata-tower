@@ -276,6 +276,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/signal-history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One stored signal's history for one pair and horizon: per asof, its
+         *     latest computation, as stored. At most 90 days.
+         */
+        get: operations["signal_history"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/signals": {
         parameters: {
             query?: never;
@@ -771,6 +791,36 @@ export interface components {
              * @description End, in micros.
              */
             to: number;
+        };
+        /** @description A stored signal's history, as stored. */
+        History: {
+            /**
+             * Format: int64
+             * @description The days read.
+             */
+            days: number;
+            /** @description Oldest first; one point per asof. */
+            points: components["schemas"]["HistoryPoint"][];
+        };
+        /** @description One point of a history: a value, or why there is none. */
+        HistoryPoint: {
+            /** @description Why there is no figure. */
+            absent?: string | null;
+            /**
+             * Format: int64
+             * @description The close the figure stands on.
+             */
+            asof_micros: number;
+            /**
+             * Format: int64
+             * @description When its latest computation was made.
+             */
+            computed_micros: number;
+            /**
+             * Format: double
+             * @description The figure.
+             */
+            value?: number | null;
         };
         /** @description One horizon's newest run, as stored. */
         HorizonFigures: {
@@ -1500,6 +1550,48 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Rates"];
+                };
+            };
+        };
+    };
+    signal_history: {
+        parameters: {
+            query: {
+                /** @description The signal: `varcov`, `beta`. */
+                signal: string;
+                /** @description The horizon: `4h`. */
+                horizon: string;
+                /** @description The measure: `correlation`, `covariance`, `beta`. */
+                measure: string;
+                /** @description The first instrument, or `*` for a figure about all of them. */
+                ticker_i: string;
+                /** @description The second, where the measure is about a pair. */
+                ticker_j?: string | null;
+                /** @description How many days of asofs, back from now. 30 when absent; at most 90. */
+                days?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One point per asof, oldest first, a value or why there is none */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["History"];
+                };
+            };
+            /** @description A window outside 1 to 90 days */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
                 };
             };
         };
