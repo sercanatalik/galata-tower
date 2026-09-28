@@ -74,3 +74,49 @@ export function chartPoints(points: readonly HistoryPoint[]): ChartPoint[] {
     return p.value != null ? { time, value: p.value } : { time }
   })
 }
+
+/** One column of the Instruments panel: which signal and measure, and how it is written. */
+export type Column = { signal: 'carry' | 'jumps' | 'liquidity'; measure: string; label: string; show: (v: number) => string }
+
+const pct = (v: number) => `${(v * 100).toFixed(2)}%`
+const bps = (v: number) => v.toFixed(2)
+const usdK = (v: number) => `$${(v / 1000).toFixed(v < 10_000 ? 2 : 0)}k`
+
+export const INSTRUMENT_COLUMNS: Column[] = [
+  { signal: 'carry', measure: 'carry_apr_7d', label: 'carry 7d', show: pct },
+  { signal: 'carry', measure: 'excess_apr_7d', label: 'over floor', show: pct },
+  { signal: 'carry', measure: 'nowcast_apr', label: 'nowcast', show: pct },
+  { signal: 'jumps', measure: 'jumps_up_24h', label: 'jumps ↑ 24h', show: (v) => v.toFixed(0) },
+  { signal: 'jumps', measure: 'jumps_down_24h', label: 'jumps ↓ 24h', show: (v) => v.toFixed(0) },
+  { signal: 'jumps', measure: 'jump_share_24h', label: 'jump share', show: pct },
+  { signal: 'jumps', measure: 'rj_z_24h', label: 'z', show: (v) => v.toFixed(1) },
+  { signal: 'liquidity', measure: 'quoted_spread_bps', label: 'quoted bps', show: bps },
+  { signal: 'liquidity', measure: 'effective_spread_bps_vw', label: 'effective bps', show: bps },
+  { signal: 'liquidity', measure: 'depth_usd_median', label: 'depth median', show: usdK },
+  { signal: 'liquidity', measure: 'depth_usd_p10', label: 'depth p10', show: usdK },
+  { signal: 'liquidity', measure: 'impact_bps_5s_vw', label: 'impact 5s bps', show: bps },
+]
+
+export type Cell = { text: string; title?: string }
+
+/** Rows by instrument: each column's stored figure as text, or "absent" with its reason as the title. */
+export function instrumentRows(by: Partial<Record<Column['signal'], HorizonFigures | undefined>>): Array<{ ticker: string; cells: Cell[] }> {
+  const tickers = new Set<string>()
+  for (const h of Object.values(by)) for (const c of h?.cells ?? []) if (c.ticker_i !== '*') tickers.add(c.ticker_i)
+  return [...tickers].sort().map((ticker) => ({
+    ticker,
+    cells: INSTRUMENT_COLUMNS.map((col) => {
+      const h = by[col.signal]
+      if (!h) return { text: '—', title: `no ${col.signal} stored` }
+      const c = h.cells.find((x) => x.measure === col.measure && x.ticker_i === ticker)
+      if (!c) return { text: '—', title: 'not written' }
+      return c.value != null ? { text: col.show(c.value) } : { text: 'absent', title: c.absent ?? undefined }
+    }),
+  }))
+}
+
+/** A signal's asof and staleness, in words. */
+export function groupNote(signal: string, h: HorizonFigures | undefined, nowMicros: number): string {
+  if (!h) return `${signal}: none stored`
+  return `${signal}: as of ${stamp(h.asof_micros)} (${forHumans(nowMicros - h.asof_micros)} ago)${h.stale ? ', stale' : ''}`
+}
