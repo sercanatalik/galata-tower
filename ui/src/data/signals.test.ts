@@ -128,7 +128,12 @@ group('the instruments panel', () => {
     const rows = instrumentRows({
       basis: one('basis', [['CL', 'premium_twa_bps', -4.5309, null], ['CL', 'mark_oracle_bps', -3.6928, null], ['CL', 'open_interest_log_change', 0.172446, null], ['CL', 'open_interest_usd', 1.346e8, null]]),
     })
-    expect(rows[0].cells.slice(12).map((c) => c.text)).toEqual(['-4.53', '-3.69', '+18.8%', '$135M'])
+    expect(rows[0].cells.slice(12, 16).map((c) => c.text)).toEqual(['-4.53', '-3.69', '+18.8%', '$135M'])
+  })
+
+  it('the order flow: its fit and both imbalances', () => {
+    const rows = instrumentRows({ flow: one('flow', [['BTC', 'ofi_r2', 0.5556, null], ['BTC', 'trade_imbalance_1h', 0.2467, null], ['BTC', 'queue_imbalance_twa', 0.325, null]]) })
+    expect(rows[0].cells.slice(16).map((c) => c.text)).toEqual(['0.56', '0.25', '0.33'])
   })
 
   it('an absent figure keeps its reason', () => {

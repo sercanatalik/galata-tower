@@ -128,7 +128,7 @@ export function chartPoints(points: readonly HistoryPoint[]): ChartPoint[] {
 }
 
 /** One column of the Instruments panel: which signal and measure, and how it is written. */
-export type Column = { signal: 'carry' | 'jumps' | 'liquidity' | 'basis'; measure: string; label: string; show: (v: number) => string }
+export type Column = { signal: 'carry' | 'jumps' | 'liquidity' | 'basis' | 'flow'; measure: string; label: string; show: (v: number) => string }
 
 const pct = (v: number) => `${(v * 100).toFixed(2)}%`
 const bps = (v: number) => v.toFixed(2)
@@ -154,6 +154,9 @@ export const INSTRUMENT_COLUMNS: Column[] = [
   { signal: 'basis', measure: 'mark_oracle_bps', label: 'mark−oracle bps', show: bps },
   { signal: 'basis', measure: 'open_interest_log_change', label: 'OI 1h', show: logPct },
   { signal: 'basis', measure: 'open_interest_usd', label: 'OI', show: usdM },
+  { signal: 'flow', measure: 'ofi_r2', label: 'OFI R²', show: (v) => v.toFixed(2) },
+  { signal: 'flow', measure: 'trade_imbalance_1h', label: 'trade imb', show: (v) => v.toFixed(2) },
+  { signal: 'flow', measure: 'queue_imbalance_twa', label: 'queue imb', show: (v) => v.toFixed(2) },
 ]
 
 export type Cell = { text: string; title?: string }
