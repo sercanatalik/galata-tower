@@ -218,20 +218,21 @@ function Instruments() {
   const basis = useSignals('basis')
   const flow = useSignals('flow')
   const moments = useSignals('moments')
+  const cascade = useSignals('cascade')
   const first = (r: typeof carry) => r.data?.horizons[0]
-  const by = { carry: first(carry), jumps: first(jumps), liquidity: first(liquidity), basis: first(basis), flow: first(flow), moments: first(moments) }
+  const by = { carry: first(carry), jumps: first(jumps), liquidity: first(liquidity), basis: first(basis), flow: first(flow), moments: first(moments), cascade: first(cascade) }
   const rows = instrumentRows(by)
   const now = Date.now() * 1000
   if (rows.length === 0)
     return (
       <div className="card">
-        <div className="state">No carry, jump, liquidity, basis, flow or moment signals on the tape yet.</div>
+        <div className="state">No carry, jump, liquidity, basis, flow, moment or cascade signals on the tape yet.</div>
       </div>
     )
   return (
     <div className="card pad">
       <p className="muted mono" style={{ fontSize: 12, margin: '0 0 8px' }}>
-        {(['carry', 'jumps', 'liquidity', 'basis', 'flow', 'moments'] as const).map((s) => groupNote(s, by[s], now)).join(' · ')}
+        {(['carry', 'jumps', 'liquidity', 'basis', 'flow', 'moments', 'cascade'] as const).map((s) => groupNote(s, by[s], now)).join(' · ')}
       </p>
       <table className="grid mono">
         <thead>
