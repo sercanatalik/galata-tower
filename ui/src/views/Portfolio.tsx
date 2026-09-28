@@ -15,7 +15,7 @@ import {
   type Statistics,
   value,
 } from '../data/risk'
-import { annualisedSigma, cellOf, describe, type HorizonFigures } from '../data/signals'
+import { annualisedSigma, betaOf, cellOf, describe, type HorizonFigures, universe } from '../data/signals'
 import { forHumans, stamp } from '../kit/format'
 import { Head, Panel } from '../kit/Panel'
 import { shown } from './Overview'
@@ -118,7 +118,7 @@ function Matrix({ stats }: { stats: Statistics }) {
   )
 }
 
-function SignalMatrix({ h }: { h: HorizonFigures }) {
+function SignalMatrix({ h, beta }: { h: HorizonFigures; beta?: HorizonFigures }) {
   const now = Date.now() * 1000
   return (
     <div>
@@ -131,6 +131,8 @@ function SignalMatrix({ h }: { h: HorizonFigures }) {
               <th key={t} scope="col">{t}</th>
             ))}
             <th scope="col">σ a year</th>
+            <th scope="col">β to BTC</th>
+            <th scope="col">not BTC</th>
           </tr>
         </thead>
         <tbody>
@@ -151,6 +153,9 @@ function SignalMatrix({ h }: { h: HorizonFigures }) {
                 <td title={own?.absent ?? undefined}>
                   {own?.value != null && h.width_micros != null ? `${(annualisedSigma(own.value, h.width_micros) * 100).toFixed(1)}%` : <span className="muted">absent</span>}
                 </td>
+                {betaOf(beta, a).map((text, k) => (
+                  <td key={k}>{text}</td>
+                ))}
               </tr>
             )
           })}
@@ -162,6 +167,11 @@ function SignalMatrix({ h }: { h: HorizonFigures }) {
 
 function Signals() {
   const signals = useSignals('varcov')
+  const beta = useSignals('beta')
+  const absorption = useSignals('absorption')
+  const surprise = useSignals('surprise')
+  const turbulence = useSignals('turbulence')
+  const at = (read: typeof beta, horizon: string) => read.data?.horizons.find((x) => x.horizon === horizon)
   const [chosen, choose] = useState<string | null>(null)
   return (
     <Panel
@@ -181,7 +191,8 @@ function Signals() {
                 </button>
               ))}
             </p>
-            <SignalMatrix h={h} />
+            <SignalMatrix h={h} beta={at(beta, h.horizon)} />
+            <p className="mono">{universe(at(absorption, h.horizon), at(surprise, h.horizon), at(turbulence, h.horizon), h.tickers.length)}</p>
           </div>
         )
       }}
