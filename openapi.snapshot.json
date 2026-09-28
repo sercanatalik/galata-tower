@@ -424,6 +424,35 @@
         }
       }
     },
+    "/v1/signals": {
+      "get": {
+        "summary": "Each horizon's newest stored figures for a signal, and whether each is\nstale by the tower's clock. Nothing is computed from them.",
+        "operationId": "stored_signals",
+        "parameters": [
+          {
+            "name": "signal",
+            "in": "query",
+            "description": "The signal's name, as the flow writes it: `varcov`.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Every horizon's newest figures, as stored; an empty list when none is",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Signals"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/statistics": {
       "get": {
         "summary": "Volatility, correlation and beta derived from the tape on request, each\nwith its n and backfilled share. The floor and z have no defaults.",
@@ -1290,6 +1319,75 @@
           }
         }
       },
+      "HorizonFigures": {
+        "type": "object",
+        "description": "One horizon's newest run, as stored.",
+        "required": [
+          "horizon",
+          "asof_micros",
+          "computed_micros",
+          "stale",
+          "model",
+          "params",
+          "fitted",
+          "tickers",
+          "cells"
+        ],
+        "properties": {
+          "asof_micros": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The close the figures stand on."
+          },
+          "cells": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SignalCell"
+            },
+            "description": "One per pair and measure."
+          },
+          "computed_micros": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When they were computed."
+          },
+          "fitted": {
+            "type": "boolean",
+            "description": "False where nothing was estimated (EWMA)."
+          },
+          "horizon": {
+            "type": "string",
+            "description": "`5m`, `4h`, `1w`."
+          },
+          "model": {
+            "type": "string",
+            "description": "How it was computed: `gjr-t/dcc`, `ewma`."
+          },
+          "params": {
+            "type": "string",
+            "description": "The model's parameters, as JSON, verbatim."
+          },
+          "stale": {
+            "type": "boolean",
+            "description": "Past asof + width + 30 minutes by the tower's clock: the next bar has\nclosed and no figure for it has been written."
+          },
+          "tickers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Every instrument named by a cell, sorted."
+          },
+          "width_micros": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The bar width, when the horizon is one the tower can read."
+          }
+        }
+      },
       "HourlyRows": {
         "type": "object",
         "description": "One hour of one dataset.",
@@ -1670,6 +1768,81 @@
           "var": {
             "type": "string",
             "description": "The environment variable that gave it.\n\n**Named because that is what gets fixed.** *\"/tmp/nope is not there\"*\nstill leaves an operator working out which of two variables set it.\nThis tree names the thing to change everywhere it matters — a broker\nrefusal carries `GALATA_BROKER_PASSWORD_READER` rather than \"a\npassword\"."
+          }
+        }
+      },
+      "SignalCell": {
+        "type": "object",
+        "description": "A value, or why there is none.",
+        "required": [
+          "measure",
+          "ticker_i"
+        ],
+        "properties": {
+          "absent": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why there is no figure."
+          },
+          "measure": {
+            "type": "string",
+            "description": "`covariance` or `correlation`."
+          },
+          "n_eff": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The effective sample it rests on."
+          },
+          "ticker_i": {
+            "type": "string",
+            "description": "The first instrument."
+          },
+          "ticker_j": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The second; absent for a measure about one instrument."
+          },
+          "value": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The figure, in the dataset's units (a covariance per bar)."
+          }
+        }
+      },
+      "Signals": {
+        "type": "object",
+        "description": "Every horizon's newest figures for one signal.",
+        "required": [
+          "signal",
+          "horizons",
+          "read_micros"
+        ],
+        "properties": {
+          "horizons": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HorizonFigures"
+            },
+            "description": "One entry per horizon found, narrowest first."
+          },
+          "read_micros": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The tower's clock when it read: what `stale` was judged against."
+          },
+          "signal": {
+            "type": "string",
+            "description": "The signal."
           }
         }
       },

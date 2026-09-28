@@ -13,6 +13,7 @@ mod failures;
 mod latest;
 mod portfolio;
 mod shape;
+mod signals;
 mod tape;
 
 use std::collections::BTreeMap;
@@ -1438,6 +1439,31 @@ async fn statistics(
     }
 }
 
+/// Each horizon's newest stored figures for a signal, and whether each is
+/// stale by the tower's clock. Nothing is computed from them.
+#[utoipa::path(
+    get,
+    path = "/v1/signals",
+    params(signals::SignalsQuery),
+    responses(
+        (status = 200, description = "Every horizon's newest figures, as stored; an empty list when none is", body = signals::Signals),
+    ),
+)]
+async fn stored_signals(
+    State(tower): State<Tower>,
+    Query(query): Query<signals::SignalsQuery>,
+) -> Response {
+    let tape = tower.tape.clone();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_micros() as i64)
+        .unwrap_or_default();
+    match tokio::task::spawn_blocking(move || signals::latest(&tape, &query.signal, now)).await {
+        Ok(found) => Json(found).into_response(),
+        Err(join) => unfinished(join),
+    }
+}
+
 /// A read that panicked or was cancelled.
 fn unfinished(join: tokio::task::JoinError) -> Response {
     (
@@ -1490,6 +1516,7 @@ fn router(tower: Tower) -> (Router, utoipa::openapi::OpenApi) {
         .routes(routes!(board))
         .routes(routes!(portfolio_report))
         .routes(routes!(statistics))
+        .routes(routes!(stored_signals))
         .with_state(tower)
         .split_for_parts()
 }

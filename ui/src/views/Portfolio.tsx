@@ -1,7 +1,7 @@
 import { useState } from 'react'
 
 import { dec, fmt, plot } from '../contract/money'
-import { PORTFOLIO_STATISTICS, useLatest, usePortfolio, useStatistics } from '../data/queries'
+import { PORTFOLIO_STATISTICS, useLatest, usePortfolio, useSignals, useStatistics } from '../data/queries'
 import {
   type Cell,
   type Derived,
@@ -15,6 +15,7 @@ import {
   type Statistics,
   value,
 } from '../data/risk'
+import { annualisedSigma, cellOf, describe, type HorizonFigures } from '../data/signals'
 import { forHumans, stamp } from '../kit/format'
 import { Head, Panel } from '../kit/Panel'
 import { shown } from './Overview'
@@ -114,6 +115,77 @@ function Matrix({ stats }: { stats: Statistics }) {
       </table>
       <PairsThatMatter stats={stats} />
     </div>
+  )
+}
+
+function SignalMatrix({ h }: { h: HorizonFigures }) {
+  const now = Date.now() * 1000
+  return (
+    <div>
+      <p className="muted mono">{describe(h, now)}</p>
+      <table className="grid mono">
+        <thead>
+          <tr>
+            <th scope="col" />
+            {h.tickers.map((t) => (
+              <th key={t} scope="col">{t}</th>
+            ))}
+            <th scope="col">σ a year</th>
+          </tr>
+        </thead>
+        <tbody>
+          {h.tickers.map((a) => {
+            const own = cellOf(h, 'covariance', a, a)
+            return (
+              <tr key={a}>
+                <th scope="row">{a}</th>
+                {h.tickers.map((b) => {
+                  if (a === b) return <td key={b} className="muted">1</td>
+                  const c = cellOf(h, 'correlation', a, b)
+                  return (
+                    <td key={b} title={c?.absent ?? (c?.n_eff != null ? `n_eff ${c.n_eff.toFixed(0)}` : undefined)}>
+                      {c?.value != null ? c.value.toFixed(2) : <span className="muted">absent</span>}
+                    </td>
+                  )
+                })}
+                <td title={own?.absent ?? undefined}>
+                  {own?.value != null && h.width_micros != null ? `${(annualisedSigma(own.value, h.width_micros) * 100).toFixed(1)}%` : <span className="muted">absent</span>}
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function Signals() {
+  const signals = useSignals('varcov')
+  const [chosen, choose] = useState<string | null>(null)
+  return (
+    <Panel
+      what="The stored signals"
+      read={signals}
+      isEmpty={(d) => d.horizons.length === 0}
+      empty="No signals on the tape yet: the flow derive-the-signals writes them when a bar closes."
+    >
+      {(d) => {
+        const h = d.horizons.find((x) => x.horizon === chosen) ?? d.horizons.find((x) => x.horizon === '4h') ?? d.horizons[0]
+        return (
+          <div>
+            <p className="mono">
+              {d.horizons.map((x) => (
+                <button key={x.horizon} type="button" aria-pressed={x.horizon === h.horizon} onClick={() => choose(x.horizon)}>
+                  {x.horizon}
+                </button>
+              ))}
+            </p>
+            <SignalMatrix h={h} />
+          </div>
+        )
+      }}
+    </Panel>
   )
 }
 
@@ -286,6 +358,13 @@ export default function Portfolio() {
             )
           }}
         </Panel>
+      </section>
+
+      <section aria-labelledby="sig">
+        <Head title="Signals" id="sig">
+          stored by the flow, as computed: ρ and σ from each horizon's declared model (Σ = D·R·D) · hover a cell for n_eff or why it is absent
+        </Head>
+        <Signals />
       </section>
 
       <section aria-labelledby="corr">

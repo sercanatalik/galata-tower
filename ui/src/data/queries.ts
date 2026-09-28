@@ -49,3 +49,6 @@ export function useStatistics(venue: string) {
     params: { query: { venue, horizon, from: to - hours * 3_600_000_000, to, min_observations, z, reference } },
   })
 }
+
+/** Every horizon's newest stored figures for a signal: computed by the flow, never here. */
+export const useSignals = (signal: string) => $api.useQuery('get', '/v1/signals', { params: { query: { signal } } })
