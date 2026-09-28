@@ -123,7 +123,7 @@ function SignalMatrix({ h, beta }: { h: HorizonFigures; beta?: HorizonFigures })
   const now = Date.now() * 1000
   return (
     <div>
-      <p className="muted mono">{describe(h, now)}</p>
+      <p className="muted mono" style={{ fontSize: 12, margin: '0 0 8px' }}>{describe(h, now)}</p>
       <table className="grid mono">
         <thead>
           <tr>
@@ -184,7 +184,7 @@ function History({ h }: { h: HorizonFigures }) {
   const absent = history.data?.points.filter((p) => p.value == null).length ?? 0
   return (
     <div>
-      <p className="mono">
+      <p className="mono" style={{ fontSize: 12, margin: '0 0 8px', display: 'flex', gap: 8, alignItems: 'center' }}>
         <select aria-label="measure" value={which} onChange={(e) => setWhich(e.currentTarget.selectedIndex)}>
           {CHARTABLE.map((c, i) => (
             <option key={c.label} value={i}>{c.label}</option>
@@ -219,10 +219,17 @@ function Instruments() {
   const by = { carry: first(carry), jumps: first(jumps), liquidity: first(liquidity) }
   const rows = instrumentRows(by)
   const now = Date.now() * 1000
-  if (rows.length === 0) return <p className="muted">No carry, jump or liquidity signals on the tape yet.</p>
+  if (rows.length === 0)
+    return (
+      <div className="card">
+        <div className="state">No carry, jump or liquidity signals on the tape yet.</div>
+      </div>
+    )
   return (
-    <div>
-      <p className="muted mono">{(['carry', 'jumps', 'liquidity'] as const).map((s) => groupNote(s, by[s], now)).join(' · ')}</p>
+    <div className="card pad">
+      <p className="muted mono" style={{ fontSize: 12, margin: '0 0 8px' }}>
+        {(['carry', 'jumps', 'liquidity'] as const).map((s) => groupNote(s, by[s], now)).join(' · ')}
+      </p>
       <table className="grid mono">
         <thead>
           <tr>
@@ -267,16 +274,18 @@ function Signals() {
       {(d) => {
         const h = d.horizons.find((x) => x.horizon === chosen) ?? d.horizons.find((x) => x.horizon === '4h') ?? d.horizons[0]
         return (
-          <div>
-            <p className="mono">
+          <div className="pad" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <div className="segmented" role="group" aria-label="Horizon" style={{ marginLeft: 0, alignSelf: 'flex-start' }}>
               {d.horizons.map((x) => (
                 <button key={x.horizon} type="button" aria-pressed={x.horizon === h.horizon} onClick={() => choose(x.horizon)}>
                   {x.horizon}
                 </button>
               ))}
-            </p>
+            </div>
             <SignalMatrix h={h} beta={at(beta, h.horizon)} />
-            <p className="mono">{universe(at(absorption, h.horizon), at(surprise, h.horizon), at(turbulence, h.horizon), h.tickers.length)}</p>
+            <p className="muted mono" style={{ fontSize: 12, margin: 0 }}>
+              {universe(at(absorption, h.horizon), at(surprise, h.horizon), at(turbulence, h.horizon), h.tickers.length)}
+            </p>
             <History h={h} />
           </div>
         )

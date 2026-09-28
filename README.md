@@ -375,7 +375,8 @@ the screen.
 | React screen embedded in the binary, with no node process in deployment | done |
 | Live venue status over SSE, and tape refetch driven by the durable bound | done |
 | Durable bound reported per venue | done |
-| Confirm the candle chart renders in a real browser (so far verified through the API only) | next |
+| The Portfolio view's Signals and Instruments panels, seen in a real browser (headless Chrome, 2026-09-28) | done: three layout defects found and fixed |
+| Confirm the candle chart renders in a real browser | next. On 2026-09-28 the Markets view rendered prices, the live venue table and quotes, but the chart panel stayed "reading…" after 60 s against the production record, while `/v1/candles` answered directly in 2.2 s (1.2 MB): to investigate |
 | Switch to crates.io dependencies once galata-datawatch 0.1.0 is published | blocked on datawatch Tier 10 |
 | Views for later Galata layers: research runs, signals, risk limits and execution state, each read-only and each added as that layer ships | planned |
 
