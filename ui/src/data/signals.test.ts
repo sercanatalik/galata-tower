@@ -124,6 +124,13 @@ group('the instruments panel', () => {
     expect(rows[1].cells[7].text).toBe('0.25')
   })
 
+  it('the basis: premium and mark in bps, open interest as a percent change and in dollars', () => {
+    const rows = instrumentRows({
+      basis: one('basis', [['CL', 'premium_twa_bps', -4.5309, null], ['CL', 'mark_oracle_bps', -3.6928, null], ['CL', 'open_interest_log_change', 0.172446, null], ['CL', 'open_interest_usd', 1.346e8, null]]),
+    })
+    expect(rows[0].cells.slice(12).map((c) => c.text)).toEqual(['-4.53', '-3.69', '+18.8%', '$135M'])
+  })
+
   it('an absent figure keeps its reason', () => {
     const rows = instrumentRows({ carry: one('carry', [['GOLD', 'carry_apr_7d', null, 'settled funding covers 0 of 168 hours']]) })
     expect(rows[0].cells[0]).toEqual({ text: 'absent', title: 'settled funding covers 0 of 168 hours' })
