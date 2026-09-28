@@ -11,6 +11,7 @@
 
 mod failures;
 mod latest;
+mod layout;
 mod portfolio;
 mod shape;
 mod signals;
@@ -98,6 +99,8 @@ struct Tower {
     latest: Arc<latest::Shared>,
     /// The partition listing, and the directory stamps it is valid for.
     listing: Arc<Listing>,
+    /// The tape's layout problems, and the segment paths they were checked for.
+    layout: Arc<layout::Cache>,
 }
 
 /// The cached partition listing, with the stamps it is valid for.
@@ -541,7 +544,22 @@ fn today_utc() -> String {
     path = "/v1/about",
     responses((status = 200, description = "The archive root and the tape's prune columns", body = About)),
 )]
-async fn about(State(tower): State<Tower>) -> Json<About> {
+async fn about(State(tower): State<Tower>) -> Response {
+    // **Off the runtime, and once per change to the tape.** `check_layout`
+    // compares ranges per label, so it opens every segment's footer: 10,063
+    // on 2026-09-28, 4.9 s. Asked here on every request, in this async fn, it
+    // stalled every request on the same worker; the tower stopped answering.
+    // `layout::problems` reuses the last check while the segment paths (a
+    // segment's name is its range) are unchanged, so a rebuild that writes or
+    // removes one is still seen on the next request.
+    let (tape, cache) = (tower.tape.clone(), Arc::clone(&tower.layout));
+    let tape_problems =
+        match tokio::task::spawn_blocking(move || layout::problems(&tape, &cache, layout::check))
+            .await
+        {
+            Ok(found) => found,
+            Err(join) => return unfinished(join),
+        };
     Json(About {
         archive: Root::of(&tower.archive, "GALATA_ARCHIVE"),
         tape: Root::of(&tower.tape, "GALATA_TAPE"),
@@ -549,16 +567,10 @@ async fn about(State(tower): State<Tower>) -> Json<About> {
             .iter()
             .map(|column| (*column).to_owned())
             .collect(),
-        // **Checked on request rather than cached.** It lists directories and
-        // parses names; it opens no parquet. `/v1/about` is fetched once per
-        // page and again whenever the record advances, which is exactly when a
-        // rebuild could have created or cleared this.
-        tape_problems: galata_datawatch::tape::check_layout(&tower.tape)
-            .iter()
-            .map(|problem| problem.to_string())
-            .collect(),
+        tape_problems,
         frontiers: tower.frontiers.read().await.by_venue(),
     })
+    .into_response()
 }
 
 /// The screen, or its index for any path the client routes itself.
@@ -1568,6 +1580,7 @@ fn dump_openapi() -> Result<String, Box<dyn std::error::Error>> {
         normalisers: Arc::new(latest::Normalisers::none()),
         latest: Arc::default(),
         listing: Arc::default(),
+        layout: Arc::default(),
     });
     Ok(serde_json::to_string_pretty(&api)? + "\n")
 }
@@ -1637,6 +1650,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ))),
         latest: Arc::default(),
         listing: Arc::default(),
+        layout: Arc::default(),
     };
     for refusal in &tower.normalisers.refusals {
         tracing::warn!(%refusal, "latest prices will not include this");
