@@ -89,6 +89,33 @@ export function constancy(h: HorizonFigures | undefined): string | null {
   return `constant correlation (Engle–Sheppard${window}): p ${shown}, ${verdict}`
 }
 
+/**
+ * The sequential monitor (Wied and Galeano) over the horizon's calendar epoch,
+ * as stored: how close the nearest pair came to its boundary, and, when one
+ * crossed, which pair and the bar its correlation is dated to have changed at.
+ * `null` where nothing is monitored.
+ */
+export function monitorOf(h: HorizonFigures | undefined): string | null {
+  if (!h) return null
+  const alarm = figure(h, 'wied_galeano_alarm')
+  const ratio = figure(h, 'wied_galeano_ratio')
+  if (alarm.value == null) return `sequential monitor: absent (${alarm.absent})`
+  let p: { epoch_start?: string; m?: number; k?: number; pair?: string[] | null; change_at?: string | null } = {}
+  try {
+    p = JSON.parse(h.params)
+  } catch {
+    // The figures stand without their epoch.
+  }
+  const epoch = p.epoch_start ? ` since ${p.epoch_start.slice(0, 10)}, ${p.k ?? '?'} returns against a baseline of ${p.m ?? '?'}` : ''
+  const how = ratio.value != null ? `, nearest pair at ${ratio.value.toFixed(2)} of its boundary` : ''
+  if (alarm.value === 1) {
+    const pair = p.pair ? p.pair.join('|') : 'a pair'
+    const when = p.change_at ? `, its correlation changed around ${stamp(Date.parse(p.change_at) * 1000)}` : ''
+    return `sequential monitor (Wied–Galeano${epoch}): alarm on ${pair}${when}`
+  }
+  return `sequential monitor (Wied–Galeano${epoch}): no alarm${how}`
+}
+
 export type HistoryPoint = components['schemas']['HistoryPoint']
 export type ChartPoint = { time: UTCTimestamp; value: number } | { time: UTCTimestamp }
 

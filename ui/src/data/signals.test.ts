@@ -1,6 +1,6 @@
 import { describe as group, expect, it } from 'vitest'
 
-import { annualisedSigma, betaOf, cellOf, chartPoints, constancy, describe, groupNote, type HorizonFigures, instrumentRows, universe } from './signals'
+import { annualisedSigma, betaOf, cellOf, chartPoints, constancy, describe, monitorOf, groupNote, type HorizonFigures, instrumentRows, universe } from './signals'
 
 const HOUR = 3_600_000_000
 const figures = (over: Partial<HorizonFigures> = {}): HorizonFigures => ({
@@ -76,6 +76,22 @@ group('the constancy test', () => {
   it('an absent test keeps its reason, and an untested horizon says nothing', () => {
     expect(constancy(tested(null, '264 returns, under min_obs=500'))).toBe('constant correlation: test absent (264 returns, under min_obs=500)')
     expect(constancy(undefined)).toBeNull()
+  })
+})
+
+group('the sequential monitor', () => {
+  const params = (extra: object) => JSON.stringify({ epoch_start: '2026-09-24T00:00:00+00:00', m: 830, k: 743, ...extra })
+  it('no alarm, with how close it came', () => {
+    const h = { ...market([['wied_galeano_alarm', 0, null], ['wied_galeano_ratio', 0.98, null]]), params: params({ pair: null, change_at: null }) }
+    expect(monitorOf(h)).toBe('sequential monitor (Wied–Galeano since 2026-09-24, 743 returns against a baseline of 830): no alarm, nearest pair at 0.98 of its boundary')
+  })
+  it('an alarm names its pair and when the correlation changed', () => {
+    const h = { ...market([['wied_galeano_alarm', 1, null], ['wied_galeano_ratio', 1.34, null]]), params: params({ pair: ['BTC', 'GOLD'], change_at: '2026-09-26T14:05:00+00:00' }) }
+    expect(monitorOf(h)).toContain('alarm on BTC|GOLD, its correlation changed around')
+  })
+  it('an absent monitor keeps its reason, and an unmonitored horizon says nothing', () => {
+    expect(monitorOf(market([['wied_galeano_alarm', null, 'a baseline of 360 returns is too short']]))).toBe('sequential monitor: absent (a baseline of 360 returns is too short)')
+    expect(monitorOf(undefined)).toBeNull()
   })
 })
 
