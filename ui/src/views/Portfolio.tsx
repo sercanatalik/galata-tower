@@ -15,7 +15,7 @@ import {
   type Statistics,
   value,
 } from '../data/risk'
-import { annualisedSigma, betaOf, cellOf, chartPoints, describe, type HorizonFigures, universe } from '../data/signals'
+import { annualisedSigma, betaOf, cellOf, chartPoints, describe, groupNote, type HorizonFigures, INSTRUMENT_COLUMNS, instrumentRows, universe } from '../data/signals'
 import SignalChart from '../charts/SignalChart'
 import { forHumans, stamp } from '../kit/format'
 import { Head, Panel } from '../kit/Panel'
@@ -207,6 +207,44 @@ function History({ h }: { h: HorizonFigures }) {
         </span>
       </p>
       <SignalChart points={points} height={220} />
+    </div>
+  )
+}
+
+function Instruments() {
+  const carry = useSignals('carry')
+  const jumps = useSignals('jumps')
+  const liquidity = useSignals('liquidity')
+  const first = (r: typeof carry) => r.data?.horizons[0]
+  const by = { carry: first(carry), jumps: first(jumps), liquidity: first(liquidity) }
+  const rows = instrumentRows(by)
+  const now = Date.now() * 1000
+  if (rows.length === 0) return <p className="muted">No carry, jump or liquidity signals on the tape yet.</p>
+  return (
+    <div>
+      <p className="muted mono">{(['carry', 'jumps', 'liquidity'] as const).map((s) => groupNote(s, by[s], now)).join(' · ')}</p>
+      <table className="grid mono">
+        <thead>
+          <tr>
+            <th scope="col" />
+            {INSTRUMENT_COLUMNS.map((c) => (
+              <th key={c.measure} scope="col">{c.label}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.ticker}>
+              <th scope="row">{r.ticker}</th>
+              {r.cells.map((c, i) => (
+                <td key={INSTRUMENT_COLUMNS[i].measure} title={c.title} className={c.text === 'absent' || c.text === '—' ? 'muted' : undefined}>
+                  {c.text}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   )
 }
@@ -423,6 +461,13 @@ export default function Portfolio() {
           stored by the flow, as computed: ρ and σ from each horizon's declared model (Σ = D·R·D) · hover a cell for n_eff or why it is absent
         </Head>
         <Signals />
+      </section>
+
+      <section aria-labelledby="inst">
+        <Head title="Instruments" id="inst">
+          carry, jumps and liquidity, each instrument's newest stored figures · hover an absent cell for why
+        </Head>
+        <Instruments />
       </section>
 
       <section aria-labelledby="corr">

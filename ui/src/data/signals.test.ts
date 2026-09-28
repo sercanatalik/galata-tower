@@ -1,6 +1,6 @@
 import { describe as group, expect, it } from 'vitest'
 
-import { annualisedSigma, betaOf, cellOf, chartPoints, describe, type HorizonFigures, universe } from './signals'
+import { annualisedSigma, betaOf, cellOf, chartPoints, describe, groupNote, type HorizonFigures, instrumentRows, universe } from './signals'
 
 const HOUR = 3_600_000_000
 const figures = (over: Partial<HorizonFigures> = {}): HorizonFigures => ({
@@ -74,5 +74,31 @@ group('the history chart', () => {
     ])
     expect(pts[0]).toEqual({ time: 1_790_553_600, value: 0.87 })
     expect(pts[1]).toEqual({ time: 1_790_568_000 })
+  })
+})
+
+group('the instruments panel', () => {
+  const one = (signal: string, cells: Array<[string, string, number | null, string | null]>): HorizonFigures =>
+    figures({ horizon: signal === 'jumps' ? '5m' : '1h', cells: cells.map(([t, m, v, a]) => ({ measure: m, ticker_i: t, ticker_j: null, value: v, absent: a, n_eff: null })) })
+
+  it('one row per instrument, every signals columns', () => {
+    const rows = instrumentRows({
+      carry: one('carry', [['BTC', 'carry_apr_7d', 0.1095, null], ['GOLD', 'carry_apr_7d', 0.0548, null]]),
+      jumps: one('jumps', [['BTC', 'jumps_up_24h', 1, null]]),
+      liquidity: one('liquidity', [['GOLD', 'quoted_spread_bps', 0.2485, null], ['BTC', 'depth_usd_median', 125462, null]]),
+    })
+    expect(rows.map((r) => r.ticker)).toEqual(['BTC', 'GOLD'])
+    const btc = rows[0].cells.map((c) => c.text)
+    expect(btc[0]).toBe('10.95%')
+    expect(btc[3]).toBe('1')
+    expect(btc[9]).toBe('$125k')
+    expect(rows[1].cells[7].text).toBe('0.25')
+  })
+
+  it('an absent figure keeps its reason', () => {
+    const rows = instrumentRows({ carry: one('carry', [['GOLD', 'carry_apr_7d', null, 'settled funding covers 0 of 168 hours']]) })
+    expect(rows[0].cells[0]).toEqual({ text: 'absent', title: 'settled funding covers 0 of 168 hours' })
+    expect(rows[0].cells[3]).toEqual({ text: '—', title: 'no jumps stored' })
+    expect(groupNote('jumps', undefined, 0)).toBe('jumps: none stored')
   })
 })
