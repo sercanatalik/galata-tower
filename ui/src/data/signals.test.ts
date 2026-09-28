@@ -1,6 +1,6 @@
 import { describe as group, expect, it } from 'vitest'
 
-import { annualisedSigma, betaOf, cellOf, chartPoints, describe, groupNote, type HorizonFigures, instrumentRows, universe } from './signals'
+import { annualisedSigma, betaOf, cellOf, chartPoints, constancy, describe, groupNote, type HorizonFigures, instrumentRows, universe } from './signals'
 
 const HOUR = 3_600_000_000
 const figures = (over: Partial<HorizonFigures> = {}): HorizonFigures => ({
@@ -63,6 +63,19 @@ group('the derived figures', () => {
     const line = universe(undefined, market([['mahalanobis', null, 'the covariance matrix is not positive definite']]), undefined, 6)
     expect(line).toContain('Mahalanobis absent (the covariance matrix is not positive definite)')
     expect(line).toContain('absorption absent (no figure for this horizon)')
+  })
+})
+
+group('the constancy test', () => {
+  const tested = (p: number | null, absent: string | null = null) => ({ ...market([['engle_sheppard_p', p, absent]]), params: '{"a":0.0,"b":0.0,"days":30,"lags":5}' })
+  it('a p-value, its window, and whether it rejects', () => {
+    expect(constancy(tested(0.574))).toBe('constant correlation (Engle–Sheppard over 30 days, 5 lags): p 0.574, no regime flag (flagged below 0.1%)')
+    expect(constancy(tested(0.004))).toContain('p 0.004, no regime flag')
+    expect(constancy(tested(0.0004))).toContain('p 4.0e-4, below 0.1%: a correlation regime flag')
+  })
+  it('an absent test keeps its reason, and an untested horizon says nothing', () => {
+    expect(constancy(tested(null, '264 returns, under min_obs=500'))).toBe('constant correlation: test absent (264 returns, under min_obs=500)')
+    expect(constancy(undefined)).toBeNull()
   })
 })
 
