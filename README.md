@@ -213,6 +213,8 @@ datasets:
   GET /v1/board        tape rows, archive segments today, coverage and gap rows per venue and dataset
   GET /v1/portfolio    the ledger's fold report for a venue, as the ledger wrote it: accounts by alias, books, checks, cash
   GET /v1/statistics   volatility, correlation and beta derived from the tape on request; the floor and z are required
+  GET /v1/signals      each horizon's newest stored signal (kind=signals), as computed, and whether it is stale
+  GET /v1/signal-history  one stored signal's history for a pair and horizon, per asof, at most 90 days
 ```
 
 - **Decimals are sent as strings.** Every price and size in the tape is

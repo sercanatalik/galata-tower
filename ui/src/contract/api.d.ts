@@ -276,6 +276,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/signal-history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One stored signal's history for one pair and horizon: per asof, its
+         *     latest computation, as stored. At most 90 days.
+         */
+        get: operations["signal_history"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/signals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Each horizon's newest stored figures for a signal, and whether each is
+         *     stale by the tower's clock. Nothing is computed from them.
+         */
+        get: operations["stored_signals"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/statistics": {
         parameters: {
             query?: never;
@@ -752,6 +792,71 @@ export interface components {
              */
             to: number;
         };
+        /** @description A stored signal's history, as stored. */
+        History: {
+            /**
+             * Format: int64
+             * @description The days read.
+             */
+            days: number;
+            /** @description Oldest first; one point per asof. */
+            points: components["schemas"]["HistoryPoint"][];
+        };
+        /** @description One point of a history: a value, or why there is none. */
+        HistoryPoint: {
+            /** @description Why there is no figure. */
+            absent?: string | null;
+            /**
+             * Format: int64
+             * @description The close the figure stands on.
+             */
+            asof_micros: number;
+            /**
+             * Format: int64
+             * @description When its latest computation was made.
+             */
+            computed_micros: number;
+            /**
+             * Format: double
+             * @description The figure.
+             */
+            value?: number | null;
+        };
+        /** @description One horizon's newest run, as stored. */
+        HorizonFigures: {
+            /**
+             * Format: int64
+             * @description The close the figures stand on.
+             */
+            asof_micros: number;
+            /** @description One per pair and measure. */
+            cells: components["schemas"]["SignalCell"][];
+            /**
+             * Format: int64
+             * @description When they were computed.
+             */
+            computed_micros: number;
+            /** @description False where nothing was estimated (EWMA). */
+            fitted: boolean;
+            /** @description `5m`, `4h`, `1w`. */
+            horizon: string;
+            /** @description How it was computed: `gjr-t/dcc`, `ewma`. */
+            model: string;
+            /** @description The model's parameters, as JSON, verbatim. */
+            params: string;
+            /**
+             * @description Past asof + width + 30 minutes by the tower's clock: the next bar has
+             *     closed and no figure for it has been written.
+             */
+            stale: boolean;
+            /** @description Every instrument named by a cell, sorted. */
+            tickers: string[];
+            /**
+             * Format: int64
+             * @description The bar width, when the horizon is one the tower can read.
+             */
+            width_micros?: number | null;
+        };
         /** @description One hour of one dataset. */
         HourlyRows: {
             /**
@@ -958,6 +1063,39 @@ export interface components {
              *     password".
              */
             var: string;
+        };
+        /** @description A value, or why there is none. */
+        SignalCell: {
+            /** @description Why there is no figure. */
+            absent?: string | null;
+            /** @description `covariance` or `correlation`. */
+            measure: string;
+            /**
+             * Format: double
+             * @description The effective sample it rests on.
+             */
+            n_eff?: number | null;
+            /** @description The first instrument. */
+            ticker_i: string;
+            /** @description The second; absent for a measure about one instrument. */
+            ticker_j?: string | null;
+            /**
+             * Format: double
+             * @description The figure, in the dataset's units (a covariance per bar).
+             */
+            value?: number | null;
+        };
+        /** @description Every horizon's newest figures for one signal. */
+        Signals: {
+            /** @description One entry per horizon found, narrowest first. */
+            horizons: components["schemas"]["HorizonFigures"][];
+            /**
+             * Format: int64
+             * @description The tower's clock when it read: what `stale` was judged against.
+             */
+            read_micros: number;
+            /** @description The signal. */
+            signal: string;
         };
         /**
          * @description One venue's status, exactly as it was published.
@@ -1412,6 +1550,71 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Rates"];
+                };
+            };
+        };
+    };
+    signal_history: {
+        parameters: {
+            query: {
+                /** @description The signal: `varcov`, `beta`. */
+                signal: string;
+                /** @description The horizon: `4h`. */
+                horizon: string;
+                /** @description The measure: `correlation`, `covariance`, `beta`. */
+                measure: string;
+                /** @description The first instrument, or `*` for a figure about all of them. */
+                ticker_i: string;
+                /** @description The second, where the measure is about a pair. */
+                ticker_j?: string | null;
+                /** @description How many days of asofs, back from now. 30 when absent; at most 90. */
+                days?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One point per asof, oldest first, a value or why there is none */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["History"];
+                };
+            };
+            /** @description A window outside 1 to 90 days */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+        };
+    };
+    stored_signals: {
+        parameters: {
+            query: {
+                /** @description The signal's name, as the flow writes it: `varcov`. */
+                signal: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every horizon's newest figures, as stored; an empty list when none is */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Signals"];
                 };
             };
         };

@@ -13,6 +13,7 @@ mod failures;
 mod latest;
 mod portfolio;
 mod shape;
+mod signals;
 mod tape;
 
 use std::collections::BTreeMap;
@@ -1438,6 +1439,58 @@ async fn statistics(
     }
 }
 
+/// Each horizon's newest stored figures for a signal, and whether each is
+/// stale by the tower's clock. Nothing is computed from them.
+#[utoipa::path(
+    get,
+    path = "/v1/signals",
+    params(signals::SignalsQuery),
+    responses(
+        (status = 200, description = "Every horizon's newest figures, as stored; an empty list when none is", body = signals::Signals),
+    ),
+)]
+async fn stored_signals(
+    State(tower): State<Tower>,
+    Query(query): Query<signals::SignalsQuery>,
+) -> Response {
+    let tape = tower.tape.clone();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_micros() as i64)
+        .unwrap_or_default();
+    match tokio::task::spawn_blocking(move || signals::latest(&tape, &query.signal, now)).await {
+        Ok(found) => Json(found).into_response(),
+        Err(join) => unfinished(join),
+    }
+}
+
+/// One stored signal's history for one pair and horizon: per asof, its
+/// latest computation, as stored. At most 90 days.
+#[utoipa::path(
+    get,
+    path = "/v1/signal-history",
+    params(signals::HistoryQuery),
+    responses(
+        (status = 200, description = "One point per asof, oldest first, a value or why there is none", body = signals::History),
+        (status = 400, description = "A window outside 1 to 90 days", body = String),
+    ),
+)]
+async fn signal_history(
+    State(tower): State<Tower>,
+    Query(query): Query<signals::HistoryQuery>,
+) -> Response {
+    let tape = tower.tape.clone();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_micros() as i64)
+        .unwrap_or_default();
+    match tokio::task::spawn_blocking(move || signals::history(&tape, &query, now)).await {
+        Ok(Ok(found)) => Json(found).into_response(),
+        Ok(Err(refusal)) => (StatusCode::BAD_REQUEST, refusal).into_response(),
+        Err(join) => unfinished(join),
+    }
+}
+
 /// A read that panicked or was cancelled.
 fn unfinished(join: tokio::task::JoinError) -> Response {
     (
@@ -1490,6 +1543,8 @@ fn router(tower: Tower) -> (Router, utoipa::openapi::OpenApi) {
         .routes(routes!(board))
         .routes(routes!(portfolio_report))
         .routes(routes!(statistics))
+        .routes(routes!(stored_signals))
+        .routes(routes!(signal_history))
         .with_state(tower)
         .split_for_parts()
 }
