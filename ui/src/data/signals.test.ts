@@ -138,7 +138,12 @@ group('the instruments panel', () => {
 
   it('the realized moments', () => {
     const rows = instrumentRows({ moments: one('moments', [['XYZ100', 'realized_skew_1d', -3.952, null], ['XYZ100', 'realized_kurt_1d', 44.89, null], ['XYZ100', 'realized_skew_7d', -1.2918, null]]) })
-    expect(rows[0].cells.slice(19).map((c) => c.text)).toEqual(['-3.95', '44.9', '-1.29'])
+    expect(rows[0].cells.slice(19, 22).map((c) => c.text)).toEqual(['-3.95', '44.9', '-1.29'])
+  })
+
+  it('the inferred liquidations', () => {
+    const rows = instrumentRows({ cascade: one('cascade', [['CL', 'liq_intensity', 0.0412, null], ['CL', 'cascade_events', 1, null]]) })
+    expect(rows[0].cells.slice(22).map((c) => c.text)).toEqual(['4.12%', '1'])
   })
 
   it('an absent figure keeps its reason', () => {
