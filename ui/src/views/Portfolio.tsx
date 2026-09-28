@@ -15,7 +15,7 @@ import {
   type Statistics,
   value,
 } from '../data/risk'
-import { annualisedSigma, betaOf, cellOf, chartPoints, constancy, describe, groupNote, type HorizonFigures, INSTRUMENT_COLUMNS, instrumentRows, universe } from '../data/signals'
+import { annualisedSigma, betaOf, cellOf, chartPoints, constancy, describe, monitorOf, groupNote, type HorizonFigures, INSTRUMENT_COLUMNS, instrumentRows, universe } from '../data/signals'
 import SignalChart from '../charts/SignalChart'
 import { forHumans, stamp } from '../kit/format'
 import { Head, Panel } from '../kit/Panel'
@@ -263,6 +263,7 @@ function Signals() {
   const surprise = useSignals('surprise')
   const turbulence = useSignals('turbulence')
   const constant = useSignals('constancy')
+  const monitored = useSignals('monitor')
   const at = (read: typeof beta, horizon: string) => read.data?.horizons.find((x) => x.horizon === horizon)
   const [chosen, choose] = useState<string | null>(null)
   return (
@@ -290,6 +291,11 @@ function Signals() {
             {constancy(at(constant, h.horizon)) && (
               <p className="muted mono" style={{ fontSize: 12, margin: 0 }}>
                 {constancy(at(constant, h.horizon))}
+              </p>
+            )}
+            {monitorOf(at(monitored, h.horizon)) && (
+              <p className="muted mono" style={{ fontSize: 12, margin: 0 }}>
+                {monitorOf(at(monitored, h.horizon))}
               </p>
             )}
             <History h={h} />
