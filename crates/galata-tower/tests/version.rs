@@ -19,8 +19,14 @@ fn version_prints_and_exits_before_serving() {
     let text = String::from_utf8(out.stdout).unwrap();
     assert!(text.starts_with("galata-tower "), "{text}");
     // A caller asks --check-config only of a tower that lists it here.
-    assert!(text.contains("understands:") && text.contains("--check-config"), "{text}");
-    assert!(started.elapsed() < Duration::from_secs(60), "it served instead of exiting");
+    assert!(
+        text.contains("understands:") && text.contains("--check-config"),
+        "{text}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(60),
+        "it served instead of exiting"
+    );
 }
 
 #[test]

@@ -1541,7 +1541,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // (datawatch check-a-config-before-writing-it). `--version` lists it, so
     // a caller asks only a tower that says it understands.
     if let Some(code) = galata_datawatch::config::check_requested(&latest::Lenient) {
-        std::process::exit(if code == std::process::ExitCode::SUCCESS { 0 } else { 1 });
+        std::process::exit(if code == std::process::ExitCode::SUCCESS {
+            0
+        } else {
+            1
+        });
     }
 
     tracing_subscriber::fmt()
