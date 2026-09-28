@@ -64,6 +64,31 @@ export function universe(absorption: HorizonFigures | undefined, surprise: Horiz
   return parts.join(' · ')
 }
 
+/**
+ * Whether the horizon's correlation has stayed constant: Engle and Sheppard's
+ * test as stored, its window and lags from the row's own params. `null` where
+ * nothing was tested (an EWMA horizon writes no `constancy`). Flagged in words
+ * only below 0.1%: a test repeated every half hour on overlapping windows
+ * alarms far more often than its nominal level (Chu, Stinchcombe and White
+ * 1996), about one false episode a month per horizon at 5% against one in
+ * years at 0.1%. The p-value is always shown.
+ */
+export function constancy(h: HorizonFigures | undefined): string | null {
+  if (!h) return null
+  const p = figure(h, 'engle_sheppard_p')
+  let window = ''
+  try {
+    const params = JSON.parse(h.params) as { days?: number; lags?: number }
+    if (params.days != null && params.lags != null) window = ` over ${params.days} days, ${params.lags} lags`
+  } catch {
+    // The p-value stands without its window.
+  }
+  if (p.value == null) return `constant correlation: test absent (${p.absent})`
+  const verdict = p.value < 0.001 ? 'below 0.1%: a correlation regime flag, the constant correlation is not holding' : 'no regime flag (flagged below 0.1%)'
+  const shown = p.value < 0.001 ? p.value.toExponential(1) : p.value.toFixed(3)
+  return `constant correlation (Engle–Sheppard${window}): p ${shown}, ${verdict}`
+}
+
 export type HistoryPoint = components['schemas']['HistoryPoint']
 export type ChartPoint = { time: UTCTimestamp; value: number } | { time: UTCTimestamp }
 
