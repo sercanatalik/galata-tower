@@ -133,7 +133,12 @@ group('the instruments panel', () => {
 
   it('the order flow: its fit and both imbalances', () => {
     const rows = instrumentRows({ flow: one('flow', [['BTC', 'ofi_r2', 0.5556, null], ['BTC', 'trade_imbalance_1h', 0.2467, null], ['BTC', 'queue_imbalance_twa', 0.325, null]]) })
-    expect(rows[0].cells.slice(16).map((c) => c.text)).toEqual(['0.56', '0.25', '0.33'])
+    expect(rows[0].cells.slice(16, 19).map((c) => c.text)).toEqual(['0.56', '0.25', '0.33'])
+  })
+
+  it('the realized moments', () => {
+    const rows = instrumentRows({ moments: one('moments', [['XYZ100', 'realized_skew_1d', -3.952, null], ['XYZ100', 'realized_kurt_1d', 44.89, null], ['XYZ100', 'realized_skew_7d', -1.2918, null]]) })
+    expect(rows[0].cells.slice(19).map((c) => c.text)).toEqual(['-3.95', '44.9', '-1.29'])
   })
 
   it('an absent figure keeps its reason', () => {
