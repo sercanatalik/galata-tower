@@ -128,11 +128,14 @@ export function chartPoints(points: readonly HistoryPoint[]): ChartPoint[] {
 }
 
 /** One column of the Instruments panel: which signal and measure, and how it is written. */
-export type Column = { signal: 'carry' | 'jumps' | 'liquidity'; measure: string; label: string; show: (v: number) => string }
+export type Column = { signal: 'carry' | 'jumps' | 'liquidity' | 'basis'; measure: string; label: string; show: (v: number) => string }
 
 const pct = (v: number) => `${(v * 100).toFixed(2)}%`
 const bps = (v: number) => v.toFixed(2)
 const usdK = (v: number) => `$${(v / 1000).toFixed(v < 10_000 ? 2 : 0)}k`
+const usdM = (v: number) => `$${(v / 1e6).toFixed(0)}M`
+/** A log change as the percent it is: e^x − 1, signed. */
+const logPct = (v: number) => `${v >= 0 ? '+' : '−'}${(Math.abs(Math.expm1(v)) * 100).toFixed(1)}%`
 
 export const INSTRUMENT_COLUMNS: Column[] = [
   { signal: 'carry', measure: 'carry_apr_7d', label: 'carry 7d', show: pct },
@@ -147,6 +150,10 @@ export const INSTRUMENT_COLUMNS: Column[] = [
   { signal: 'liquidity', measure: 'depth_usd_median', label: 'depth median', show: usdK },
   { signal: 'liquidity', measure: 'depth_usd_p10', label: 'depth p10', show: usdK },
   { signal: 'liquidity', measure: 'impact_bps_5s_vw', label: 'impact 5s bps', show: bps },
+  { signal: 'basis', measure: 'premium_twa_bps', label: 'premium bps', show: bps },
+  { signal: 'basis', measure: 'mark_oracle_bps', label: 'mark−oracle bps', show: bps },
+  { signal: 'basis', measure: 'open_interest_log_change', label: 'OI 1h', show: logPct },
+  { signal: 'basis', measure: 'open_interest_usd', label: 'OI', show: usdM },
 ]
 
 export type Cell = { text: string; title?: string }
