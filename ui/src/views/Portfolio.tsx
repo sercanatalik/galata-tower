@@ -15,7 +15,7 @@ import {
   type Statistics,
   value,
 } from '../data/risk'
-import { annualisedSigma, betaOf, cellOf, chartPoints, constancy, describe, monitorOf, groupNote, type HorizonFigures, INSTRUMENT_COLUMNS, instrumentRows, universe } from '../data/signals'
+import { annualisedSigma, betaOf, cellOf, chartPoints, constancy, describe, monitorOf, tailOf, groupNote, type HorizonFigures, INSTRUMENT_COLUMNS, instrumentRows, universe } from '../data/signals'
 import SignalChart from '../charts/SignalChart'
 import { forHumans, stamp } from '../kit/format'
 import { Head, Panel } from '../kit/Panel'
@@ -119,7 +119,7 @@ function Matrix({ stats }: { stats: Statistics }) {
   )
 }
 
-function SignalMatrix({ h, beta }: { h: HorizonFigures; beta?: HorizonFigures }) {
+function SignalMatrix({ h, beta, tail }: { h: HorizonFigures; beta?: HorizonFigures; tail?: HorizonFigures }) {
   const now = Date.now() * 1000
   return (
     <div>
@@ -134,6 +134,8 @@ function SignalMatrix({ h, beta }: { h: HorizonFigures; beta?: HorizonFigures })
             <th scope="col">σ a year</th>
             <th scope="col">β to BTC</th>
             <th scope="col">not BTC</th>
+            <th scope="col" title="one bar ahead, filtered historical simulation">VaR 99% bar</th>
+            <th scope="col" title="one bar ahead, filtered historical simulation">ES 97.5% bar</th>
           </tr>
         </thead>
         <tbody>
@@ -156,6 +158,9 @@ function SignalMatrix({ h, beta }: { h: HorizonFigures; beta?: HorizonFigures })
                 </td>
                 {betaOf(beta, a).map((text, k) => (
                   <td key={k}>{text}</td>
+                ))}
+                {tailOf(tail, a).map((text, k) => (
+                  <td key={`t${k}`} className={text === 'absent' ? 'muted' : undefined}>{text}</td>
                 ))}
               </tr>
             )
@@ -268,6 +273,7 @@ function Signals() {
   const surprise = useSignals('surprise')
   const turbulence = useSignals('turbulence')
   const constant = useSignals('constancy')
+  const tails = useSignals('tail')
   const monitored = useSignals('monitor')
   const at = (read: typeof beta, horizon: string) => read.data?.horizons.find((x) => x.horizon === horizon)
   const [chosen, choose] = useState<string | null>(null)
@@ -289,7 +295,7 @@ function Signals() {
                 </button>
               ))}
             </div>
-            <SignalMatrix h={h} beta={at(beta, h.horizon)} />
+            <SignalMatrix h={h} beta={at(beta, h.horizon)} tail={at(tails, h.horizon)} />
             <p className="muted mono" style={{ fontSize: 12, margin: 0 }}>
               {universe(at(absorption, h.horizon), at(surprise, h.horizon), at(turbulence, h.horizon), h.tickers.length)}
             </p>

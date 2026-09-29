@@ -116,6 +116,18 @@ export function monitorOf(h: HorizonFigures | undefined): string | null {
   return `sequential monitor (Wied–Galeano${epoch}): no alarm${how}`
 }
 
+/**
+ * One instrument's next-bar tail as stored (filtered historical simulation):
+ * VaR 99% and ES 97.5% as loss percentages of one bar, or "absent".
+ */
+export function tailOf(tail: HorizonFigures | undefined, ticker: string): [string, string] {
+  const pct = (m: string) => {
+    const f = figure(tail, m, ticker)
+    return f.value != null ? `${(f.value * 100).toFixed(2)}%` : 'absent'
+  }
+  return [pct('var_99'), pct('es_975')]
+}
+
 export type HistoryPoint = components['schemas']['HistoryPoint']
 export type ChartPoint = { time: UTCTimestamp; value: number } | { time: UTCTimestamp }
 

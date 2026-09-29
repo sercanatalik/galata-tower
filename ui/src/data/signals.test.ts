@@ -1,6 +1,6 @@
 import { describe as group, expect, it } from 'vitest'
 
-import { annualisedSigma, betaOf, cellOf, chartPoints, constancy, describe, monitorOf, groupNote, type HorizonFigures, instrumentRows, universe } from './signals'
+import { annualisedSigma, betaOf, cellOf, chartPoints, constancy, describe, monitorOf, tailOf, groupNote, type HorizonFigures, instrumentRows, universe } from './signals'
 
 const HOUR = 3_600_000_000
 const figures = (over: Partial<HorizonFigures> = {}): HorizonFigures => ({
@@ -92,6 +92,14 @@ group('the sequential monitor', () => {
   it('an absent monitor keeps its reason, and an unmonitored horizon says nothing', () => {
     expect(monitorOf(market([['wied_galeano_alarm', null, 'a baseline of 360 returns is too short']]))).toBe('sequential monitor: absent (a baseline of 360 returns is too short)')
     expect(monitorOf(undefined)).toBeNull()
+  })
+})
+
+group('the tail', () => {
+  it('VaR and ES as one bar\'s loss, or absent', () => {
+    const t = figures({ cells: [{ measure: 'var_99', ticker_i: 'BTC', ticker_j: null, value: 0.012640, absent: null, n_eff: 5082 }, { measure: 'es_975', ticker_i: 'BTC', ticker_j: null, value: 0.013430, absent: null, n_eff: 5082 }] })
+    expect(tailOf(t, 'BTC')).toEqual(['1.26%', '1.34%'])
+    expect(tailOf(t, 'ETH')).toEqual(['absent', 'absent'])
   })
 })
 
