@@ -160,7 +160,7 @@ export function chartPoints(points: readonly HistoryPoint[]): ChartPoint[] {
  * alone has `external_share`), whose figure the calculator kept to it.
  */
 export type Column = {
-  signal: 'carry' | 'jumps' | 'liquidity' | 'basis' | 'flow' | 'moments' | 'cascade' | 'activity' | 'leadlag'
+  signal: 'carry' | 'jumps' | 'liquidity' | 'basis' | 'flow' | 'moments' | 'cascade' | 'activity' | 'leadlag' | 'realvol'
   measure: string
   label: string
   show: (v: number) => string
@@ -204,6 +204,11 @@ export const INSTRUMENT_COLUMNS: Column[] = [
   { signal: 'moments', measure: 'realized_skew_1d', label: 'skew 1d', show: (v) => v.toFixed(2), sessioned: IN_SESSION },
   { signal: 'moments', measure: 'realized_kurt_1d', label: 'kurt 1d', show: (v) => v.toFixed(1), sessioned: IN_SESSION },
   { signal: 'moments', measure: 'realized_skew_7d', label: 'skew 7d', show: (v) => v.toFixed(2), sessioned: IN_SESSION },
+  { signal: 'realvol', measure: 'sigma_1d', label: 'σ 1d fcst', show: pct },
+  { signal: 'realvol', measure: 'sigma_7d', label: 'σ 7d fcst', show: pct },
+  { signal: 'realvol', measure: 'vol_term', label: 'RV / 30d', show: (v) => v.toFixed(2) },
+  { signal: 'realvol', measure: 'qlike_harq', label: 'loss HARQ', show: (v) => v.toFixed(2) },
+  { signal: 'realvol', measure: 'qlike_mean30', label: 'loss 30d mean', show: (v) => v.toFixed(2) },
   { signal: 'cascade', measure: 'liq_intensity', label: 'liq %', show: pct },
   { signal: 'cascade', measure: 'cascade_events', label: 'liq events', show: (v) => v.toFixed(0) },
   { signal: 'activity', measure: 'volume_z', label: 'vol z', show: (v) => v.toFixed(1) },

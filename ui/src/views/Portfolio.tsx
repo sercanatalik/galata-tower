@@ -228,20 +228,21 @@ function Instruments() {
   const cascade = useSignals('cascade')
   const activity = useSignals('activity')
   const leadlag = useSignals('leadlag')
+  const realvol = useSignals('realvol')
   const first = (r: typeof carry) => r.data?.horizons[0]
-  const by = { carry: first(carry), jumps: first(jumps), liquidity: first(liquidity), basis: first(basis), flow: first(flow), moments: first(moments), cascade: first(cascade), activity: first(activity), leadlag: first(leadlag) }
+  const by = { carry: first(carry), jumps: first(jumps), liquidity: first(liquidity), basis: first(basis), flow: first(flow), moments: first(moments), cascade: first(cascade), activity: first(activity), leadlag: first(leadlag), realvol: first(realvol) }
   const rows = instrumentRows(by)
   const now = Date.now() * 1000
   if (rows.length === 0)
     return (
       <div className="card">
-        <div className="state">No carry, jump, liquidity, basis, flow, moment, cascade or activity signals on the tape yet.</div>
+        <div className="state">No per-instrument signals on the tape yet.</div>
       </div>
     )
   return (
     <div className="card pad">
       <p className="muted mono" style={{ fontSize: 12, margin: '0 0 8px' }}>
-        {(['carry', 'jumps', 'liquidity', 'basis', 'flow', 'moments', 'cascade', 'activity', 'leadlag'] as const).map((s) => groupNote(s, by[s], now)).join(' · ')}
+        {(['carry', 'jumps', 'liquidity', 'basis', 'flow', 'moments', 'realvol', 'cascade', 'activity', 'leadlag'] as const).map((s) => groupNote(s, by[s], now)).join(' · ')}
       </p>
       <div className="scroll-x">
       <table className="grid mono wide">
