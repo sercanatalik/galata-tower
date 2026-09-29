@@ -15,7 +15,7 @@ import {
   type Statistics,
   value,
 } from '../data/risk'
-import { annualisedSigma, betaOf, cellOf, backtestOf, chartPoints, constancy, describe, monitorOf, tailOf, groupNote, type HorizonFigures, INSTRUMENT_COLUMNS, instrumentRows, universe } from '../data/signals'
+import { annualisedSigma, betaOf, cellOf, backtestOf, chartPoints, constancy, describe, monitorOf, tailOf, groupNote, type HorizonFigures, INSTRUMENT_COLUMNS, instrumentRows, signalGroups, universe } from '../data/signals'
 import SignalChart from '../charts/SignalChart'
 import { forHumans, stamp } from '../kit/format'
 import { Head, Panel } from '../kit/Panel'
@@ -243,12 +243,23 @@ function Instruments() {
       <p className="muted mono" style={{ fontSize: 12, margin: '0 0 8px' }}>
         {(['carry', 'jumps', 'liquidity', 'basis', 'flow', 'moments', 'cascade', 'activity', 'leadlag'] as const).map((s) => groupNote(s, by[s], now)).join(' · ')}
       </p>
-      <table className="grid mono">
+      <div className="scroll-x">
+      <table className="grid mono wide">
         <thead>
+          <tr>
+            <th />
+            {signalGroups(INSTRUMENT_COLUMNS).map((g) => (
+              <th key={g.signal} scope="colgroup" colSpan={g.span} className="group">
+                {g.signal}
+              </th>
+            ))}
+          </tr>
           <tr>
             <th scope="col" />
             {INSTRUMENT_COLUMNS.map((c) => (
-              <th key={c.measure} scope="col">{c.label}</th>
+              <th key={c.measure} scope="col" className="num">
+                {c.label}
+              </th>
             ))}
           </tr>
         </thead>
@@ -257,7 +268,7 @@ function Instruments() {
             <tr key={r.ticker}>
               <th scope="row">{r.ticker}</th>
               {r.cells.map((c, i) => (
-                <td key={INSTRUMENT_COLUMNS[i].measure} title={c.title} className={c.text === 'absent' || c.text === '—' ? 'muted' : undefined}>
+                <td key={INSTRUMENT_COLUMNS[i].measure} title={c.title} className={c.text === 'absent' || c.text === '—' ? 'num muted' : 'num'}>
                   {c.text}
                 </td>
               ))}
@@ -265,6 +276,7 @@ function Instruments() {
           ))}
         </tbody>
       </table>
+      </div>
     </div>
   )
 }
@@ -501,7 +513,7 @@ export default function Portfolio() {
 
       <section aria-labelledby="inst">
         <Head title="Instruments" id="inst">
-          carry, jumps and liquidity, each instrument's newest stored figures · hover an absent cell for why
+          each instrument's newest stored figures, by signal · hover a cell for why it is absent, or how it was kept to a session
         </Head>
         <Instruments />
       </section>

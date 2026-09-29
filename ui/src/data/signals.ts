@@ -154,7 +154,20 @@ export function chartPoints(points: readonly HistoryPoint[]): ChartPoint[] {
 
 /** One column of the Instruments panel: which signal and measure, and how it is written. */
 /** `pair`: the figure is about the pair (BTC, this instrument), stored with the instrument as `ticker_j`. */
-export type Column = { signal: 'carry' | 'jumps' | 'liquidity' | 'basis' | 'flow' | 'moments' | 'cascade' | 'activity' | 'leadlag'; measure: string; label: string; show: (v: number) => string; pair?: boolean }
+/**
+ * `missing` is said when an instrument has no such cell; `sessioned` is the
+ * title of a figure for an instrument with a session (an xyz perp, which
+ * alone has `external_share`), whose figure the calculator kept to it.
+ */
+export type Column = {
+  signal: 'carry' | 'jumps' | 'liquidity' | 'basis' | 'flow' | 'moments' | 'cascade' | 'activity' | 'leadlag'
+  measure: string
+  label: string
+  show: (v: number) => string
+  pair?: boolean
+  missing?: string
+  sessioned?: string
+}
 
 const pct = (v: number) => `${(v * 100).toFixed(2)}%`
 const bps = (v: number) => v.toFixed(2)
@@ -162,6 +175,9 @@ const usdK = (v: number) => `$${(v / 1000).toFixed(v < 10_000 ? 2 : 0)}k`
 const usdM = (v: number) => `$${(v / 1e6).toFixed(0)}M`
 /** A log change as the percent it is: e^x − 1, signed. */
 const logPct = (v: number) => `${v >= 0 ? '+' : '−'}${(Math.abs(Math.expm1(v)) * 100).toFixed(1)}%`
+
+/** An xyz perp's moments, from the day to 30 September 2026 on (`keep-to-the-session`). */
+const IN_SESSION = 'from 5-minute returns wholly in the CME Globex session, the reopening jump left out (days from 30 September 2026)'
 
 export const INSTRUMENT_COLUMNS: Column[] = [
   { signal: 'carry', measure: 'carry_apr_7d', label: 'carry 7d', show: pct },
@@ -180,12 +196,14 @@ export const INSTRUMENT_COLUMNS: Column[] = [
   { signal: 'basis', measure: 'mark_oracle_bps', label: 'mark−oracle bps', show: bps },
   { signal: 'basis', measure: 'open_interest_log_change', label: 'OI 1h', show: logPct },
   { signal: 'basis', measure: 'open_interest_usd', label: 'OI', show: usdM },
+  { signal: 'basis', measure: 'external_share', label: 'in session', show: (v) => `${(v * 100).toFixed(0)}%`, missing: 'trades around the clock: no session' },
+  { signal: 'basis', measure: 'premium_z_30d', label: 'premium z', show: (v) => v.toFixed(1), sessioned: 'against the stored hours wholly in the CME Globex session' },
   { signal: 'flow', measure: 'ofi_r2', label: 'OFI R²', show: (v) => v.toFixed(2) },
   { signal: 'flow', measure: 'trade_imbalance_1h', label: 'trade imb', show: (v) => v.toFixed(2) },
   { signal: 'flow', measure: 'queue_imbalance_twa', label: 'queue imb', show: (v) => v.toFixed(2) },
-  { signal: 'moments', measure: 'realized_skew_1d', label: 'skew 1d', show: (v) => v.toFixed(2) },
-  { signal: 'moments', measure: 'realized_kurt_1d', label: 'kurt 1d', show: (v) => v.toFixed(1) },
-  { signal: 'moments', measure: 'realized_skew_7d', label: 'skew 7d', show: (v) => v.toFixed(2) },
+  { signal: 'moments', measure: 'realized_skew_1d', label: 'skew 1d', show: (v) => v.toFixed(2), sessioned: IN_SESSION },
+  { signal: 'moments', measure: 'realized_kurt_1d', label: 'kurt 1d', show: (v) => v.toFixed(1), sessioned: IN_SESSION },
+  { signal: 'moments', measure: 'realized_skew_7d', label: 'skew 7d', show: (v) => v.toFixed(2), sessioned: IN_SESSION },
   { signal: 'cascade', measure: 'liq_intensity', label: 'liq %', show: pct },
   { signal: 'cascade', measure: 'cascade_events', label: 'liq events', show: (v) => v.toFixed(0) },
   { signal: 'activity', measure: 'volume_z', label: 'vol z', show: (v) => v.toFixed(1) },
@@ -194,22 +212,37 @@ export const INSTRUMENT_COLUMNS: Column[] = [
   { signal: 'leadlag', measure: 'llr', label: 'lead/lag', show: (v) => v.toFixed(2), pair: true },
 ]
 
+/** Consecutive columns of one signal, for a header row that names each group once. */
+export function signalGroups(columns: Column[]): Array<{ signal: Column['signal']; span: number }> {
+  const groups: Array<{ signal: Column['signal']; span: number }> = []
+  for (const c of columns) {
+    const last = groups[groups.length - 1]
+    if (last?.signal === c.signal) last.span += 1
+    else groups.push({ signal: c.signal, span: 1 })
+  }
+  return groups
+}
+
 export type Cell = { text: string; title?: string }
 
 /** Rows by instrument: each column's stored figure as text, or "absent" with its reason as the title. */
 export function instrumentRows(by: Partial<Record<Column['signal'], HorizonFigures | undefined>>): Array<{ ticker: string; cells: Cell[] }> {
   const tickers = new Set<string>()
   for (const h of Object.values(by)) for (const c of h?.cells ?? []) if (c.ticker_i !== '*') tickers.add(c.ticker_i)
-  return [...tickers].sort().map((ticker) => ({
-    ticker,
-    cells: INSTRUMENT_COLUMNS.map((col) => {
-      const h = by[col.signal]
-      if (!h) return { text: '—', title: `no ${col.signal} stored` }
-      const c = h.cells.find((x) => x.measure === col.measure && (col.pair ? x.ticker_j === ticker : x.ticker_i === ticker))
-      if (!c) return { text: '—', title: col.pair ? 'not a pair with BTC' : 'not written' }
-      return c.value != null ? { text: col.show(c.value) } : { text: 'absent', title: c.absent ?? undefined }
-    }),
-  }))
+  return [...tickers].sort().map((ticker) => {
+    const session = by.basis?.cells.some((x) => x.measure === 'external_share' && x.ticker_i === ticker) ?? false
+    return {
+      ticker,
+      cells: INSTRUMENT_COLUMNS.map((col) => {
+        const h = by[col.signal]
+        if (!h) return { text: '—', title: `no ${col.signal} stored` }
+        const c = h.cells.find((x) => x.measure === col.measure && (col.pair ? x.ticker_j === ticker : x.ticker_i === ticker))
+        if (!c) return { text: '—', title: col.pair ? 'not a pair with BTC' : (col.missing ?? 'not written') }
+        if (c.value == null) return { text: 'absent', title: c.absent ?? undefined }
+        return session && col.sessioned ? { text: col.show(c.value), title: col.sessioned } : { text: col.show(c.value) }
+      }),
+    }
+  })
 }
 
 /** A signal's asof and staleness, in words. */
