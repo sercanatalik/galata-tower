@@ -1,6 +1,6 @@
 import { describe as group, expect, it } from 'vitest'
 
-import { annualisedSigma, betaOf, cellOf, backtestOf, chartPoints, constancy, describe, monitorOf, tailOf, groupNote, type HorizonFigures, instrumentRows, universe } from './signals'
+import { annualisedSigma, betaOf, cellOf, backtestOf, chartPoints, constancy, describe, monitorOf, tailOf, groupNote, type HorizonFigures, INSTRUMENT_COLUMNS, instrumentRows, signalGroups, universe } from './signals'
 
 const HOUR = 3_600_000_000
 const figures = (over: Partial<HorizonFigures> = {}): HorizonFigures => ({
@@ -143,6 +143,25 @@ group('the instruments panel', () => {
     expect(rows[1].cells[7].text).toBe('0.25')
   })
 
+  it('the session of an xyz perp: its share, the z against the session, and its moments kept to it', () => {
+    const rows = instrumentRows({
+      basis: one('basis', [['BTC', 'premium_z_30d', 1.23, null], ['GOLD', 'external_share', 0, null], ['GOLD', 'premium_z_30d', null, '0% of the hour in the external session']]),
+      moments: one('moments', [['BTC', 'realized_kurt_1d', 9.35, null], ['GOLD', 'realized_kurt_1d', 7.19, null]]),
+    })
+    const [btc, gold] = rows
+    expect(btc.cells.slice(16, 18)).toEqual([{ text: '—', title: 'trades around the clock: no session' }, { text: '1.2' }])
+    expect(gold.cells.slice(16, 18)).toEqual([{ text: '0%' }, { text: 'absent', title: '0% of the hour in the external session' }])
+    expect(btc.cells[22]).toEqual({ text: '9.3' })
+    expect(gold.cells[22].text).toBe('7.2')
+    expect(gold.cells[22].title).toMatch(/CME Globex session/)
+  })
+
+  it('names each signal once over its columns', () => {
+    const groups = signalGroups(INSTRUMENT_COLUMNS)
+    expect(groups.map((g) => g.signal)).toEqual(['carry', 'jumps', 'liquidity', 'basis', 'flow', 'moments', 'cascade', 'activity', 'leadlag'])
+    expect(groups.reduce((n, g) => n + g.span, 0)).toBe(INSTRUMENT_COLUMNS.length)
+  })
+
   it('the basis: premium and mark in bps, open interest as a percent change and in dollars', () => {
     const rows = instrumentRows({
       basis: one('basis', [['CL', 'premium_twa_bps', -4.5309, null], ['CL', 'mark_oracle_bps', -3.6928, null], ['CL', 'open_interest_log_change', 0.172446, null], ['CL', 'open_interest_usd', 1.346e8, null]]),
@@ -152,22 +171,22 @@ group('the instruments panel', () => {
 
   it('the order flow: its fit and both imbalances', () => {
     const rows = instrumentRows({ flow: one('flow', [['BTC', 'ofi_r2', 0.5556, null], ['BTC', 'trade_imbalance_1h', 0.2467, null], ['BTC', 'queue_imbalance_twa', 0.325, null]]) })
-    expect(rows[0].cells.slice(16, 19).map((c) => c.text)).toEqual(['0.56', '0.25', '0.33'])
+    expect(rows[0].cells.slice(18, 21).map((c) => c.text)).toEqual(['0.56', '0.25', '0.33'])
   })
 
   it('the realized moments', () => {
     const rows = instrumentRows({ moments: one('moments', [['XYZ100', 'realized_skew_1d', -3.952, null], ['XYZ100', 'realized_kurt_1d', 44.89, null], ['XYZ100', 'realized_skew_7d', -1.2918, null]]) })
-    expect(rows[0].cells.slice(19, 22).map((c) => c.text)).toEqual(['-3.95', '44.9', '-1.29'])
+    expect(rows[0].cells.slice(21, 24).map((c) => c.text)).toEqual(['-3.95', '44.9', '-1.29'])
   })
 
   it('the inferred liquidations', () => {
     const rows = instrumentRows({ cascade: one('cascade', [['CL', 'liq_intensity', 0.0412, null], ['CL', 'cascade_events', 1, null]]) })
-    expect(rows[0].cells.slice(22, 24).map((c) => c.text)).toEqual(['4.12%', '1'])
+    expect(rows[0].cells.slice(24, 26).map((c) => c.text)).toEqual(['4.12%', '1'])
   })
 
   it('the abnormal activity', () => {
     const rows = instrumentRows({ activity: one('activity', [['BTC', 'volume_z', 2.34, null], ['BTC', 'large_share', 0.587, null]]) })
-    expect(rows[0].cells.slice(24, 26).map((c) => c.text)).toEqual(['2.3', '59%'])
+    expect(rows[0].cells.slice(26, 28).map((c) => c.text)).toEqual(['2.3', '59%'])
   })
 
   it('BTC\'s lead over each, looked up by the pair', () => {
@@ -176,7 +195,7 @@ group('the instruments panel', () => {
       { measure: 'llr', ticker_i: 'BTC', ticker_j: 'ETH', value: 0.626, absent: null, n_eff: null },
     ]
     const rows = instrumentRows({ leadlag: figures({ horizon: '1h', cells }), carry: one('carry', [['ETH', 'carry_apr_7d', 0.1, null], ['BTC', 'carry_apr_7d', 0.1, null]]) })
-    const byTicker = Object.fromEntries(rows.map((r) => [r.ticker, r.cells.slice(26).map((c) => c.text)]))
+    const byTicker = Object.fromEntries(rows.map((r) => [r.ticker, r.cells.slice(28).map((c) => c.text)]))
     expect(byTicker.ETH).toEqual(['-100', '0.63'])
     expect(byTicker.BTC).toEqual(['—', '—'])
   })

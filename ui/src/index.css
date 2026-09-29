@@ -116,6 +116,10 @@ table.grid { border-collapse: collapse; width: 100%; font-size: 12.5px; }
 table.grid th { text-align: left; font-weight: 500; color: var(--muted); padding: 4px 0; }
 table.grid td { padding: 4px 0; border-top: 1px solid var(--rule); }
 table.grid .num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+/* A table wider than its card scrolls inside it; its cells keep apart and on one line. */
+.scroll-x { overflow-x: auto; }
+table.grid.wide th, table.grid.wide td { padding: 4px 0 4px 14px; white-space: nowrap; }
+table.grid.wide th.group { text-align: left; color: var(--text); border-bottom: 1px solid var(--rule); padding-left: 14px; }
 
 /* record */
 .record { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 24px; align-items: start; }
