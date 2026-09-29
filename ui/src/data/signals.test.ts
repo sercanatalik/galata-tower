@@ -143,7 +143,12 @@ group('the instruments panel', () => {
 
   it('the inferred liquidations', () => {
     const rows = instrumentRows({ cascade: one('cascade', [['CL', 'liq_intensity', 0.0412, null], ['CL', 'cascade_events', 1, null]]) })
-    expect(rows[0].cells.slice(22).map((c) => c.text)).toEqual(['4.12%', '1'])
+    expect(rows[0].cells.slice(22, 24).map((c) => c.text)).toEqual(['4.12%', '1'])
+  })
+
+  it('the abnormal activity', () => {
+    const rows = instrumentRows({ activity: one('activity', [['BTC', 'volume_z', 2.34, null], ['BTC', 'large_share', 0.587, null]]) })
+    expect(rows[0].cells.slice(24).map((c) => c.text)).toEqual(['2.3', '59%'])
   })
 
   it('an absent figure keeps its reason', () => {

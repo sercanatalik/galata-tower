@@ -128,7 +128,7 @@ export function chartPoints(points: readonly HistoryPoint[]): ChartPoint[] {
 }
 
 /** One column of the Instruments panel: which signal and measure, and how it is written. */
-export type Column = { signal: 'carry' | 'jumps' | 'liquidity' | 'basis' | 'flow' | 'moments' | 'cascade'; measure: string; label: string; show: (v: number) => string }
+export type Column = { signal: 'carry' | 'jumps' | 'liquidity' | 'basis' | 'flow' | 'moments' | 'cascade' | 'activity'; measure: string; label: string; show: (v: number) => string }
 
 const pct = (v: number) => `${(v * 100).toFixed(2)}%`
 const bps = (v: number) => v.toFixed(2)
@@ -162,6 +162,8 @@ export const INSTRUMENT_COLUMNS: Column[] = [
   { signal: 'moments', measure: 'realized_skew_7d', label: 'skew 7d', show: (v) => v.toFixed(2) },
   { signal: 'cascade', measure: 'liq_intensity', label: 'liq %', show: pct },
   { signal: 'cascade', measure: 'cascade_events', label: 'liq events', show: (v) => v.toFixed(0) },
+  { signal: 'activity', measure: 'volume_z', label: 'vol z', show: (v) => v.toFixed(1) },
+  { signal: 'activity', measure: 'large_share', label: 'large %', show: (v) => `${(v * 100).toFixed(0)}%` },
 ]
 
 export type Cell = { text: string; title?: string }
