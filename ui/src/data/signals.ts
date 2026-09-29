@@ -128,6 +128,19 @@ export function tailOf(tail: HorizonFigures | undefined, ticker: string): [strin
   return [pct('var_99'), pct('es_975')]
 }
 
+/**
+ * One instrument's tail backtest at 97.5%, in words: the hit rate against
+ * the 2.5% it should be, and Acerbi and Székely's Z2 with its light (green
+ * above −0.7, yellow to −1.8, red below). "absent" until 250 forecasts are stored.
+ */
+export function backtestOf(bt: HorizonFigures | undefined, ticker: string): string {
+  const hits = figure(bt, 'hit_rate_975', ticker)
+  const z2 = figure(bt, 'z2_975', ticker)
+  if (hits.value == null || z2.value == null) return 'absent'
+  const light = z2.value < -1.8 ? 'red' : z2.value < -0.7 ? 'yellow' : 'green'
+  return `${(hits.value * 100).toFixed(1)}% hits · Z2 ${z2.value.toFixed(2)} ${light}`
+}
+
 export type HistoryPoint = components['schemas']['HistoryPoint']
 export type ChartPoint = { time: UTCTimestamp; value: number } | { time: UTCTimestamp }
 
@@ -140,7 +153,8 @@ export function chartPoints(points: readonly HistoryPoint[]): ChartPoint[] {
 }
 
 /** One column of the Instruments panel: which signal and measure, and how it is written. */
-export type Column = { signal: 'carry' | 'jumps' | 'liquidity' | 'basis' | 'flow' | 'moments' | 'cascade' | 'activity'; measure: string; label: string; show: (v: number) => string }
+/** `pair`: the figure is about the pair (BTC, this instrument), stored with the instrument as `ticker_j`. */
+export type Column = { signal: 'carry' | 'jumps' | 'liquidity' | 'basis' | 'flow' | 'moments' | 'cascade' | 'activity' | 'leadlag'; measure: string; label: string; show: (v: number) => string; pair?: boolean }
 
 const pct = (v: number) => `${(v * 100).toFixed(2)}%`
 const bps = (v: number) => v.toFixed(2)
@@ -176,6 +190,8 @@ export const INSTRUMENT_COLUMNS: Column[] = [
   { signal: 'cascade', measure: 'cascade_events', label: 'liq events', show: (v) => v.toFixed(0) },
   { signal: 'activity', measure: 'volume_z', label: 'vol z', show: (v) => v.toFixed(1) },
   { signal: 'activity', measure: 'large_share', label: 'large %', show: (v) => `${(v * 100).toFixed(0)}%` },
+  { signal: 'leadlag', measure: 'lead_ms', label: 'BTC lead ms', show: (v) => `${v > 0 ? '+' : ''}${v.toFixed(0)}`, pair: true },
+  { signal: 'leadlag', measure: 'llr', label: 'lead/lag', show: (v) => v.toFixed(2), pair: true },
 ]
 
 export type Cell = { text: string; title?: string }
@@ -189,8 +205,8 @@ export function instrumentRows(by: Partial<Record<Column['signal'], HorizonFigur
     cells: INSTRUMENT_COLUMNS.map((col) => {
       const h = by[col.signal]
       if (!h) return { text: '—', title: `no ${col.signal} stored` }
-      const c = h.cells.find((x) => x.measure === col.measure && x.ticker_i === ticker)
-      if (!c) return { text: '—', title: 'not written' }
+      const c = h.cells.find((x) => x.measure === col.measure && (col.pair ? x.ticker_j === ticker : x.ticker_i === ticker))
+      if (!c) return { text: '—', title: col.pair ? 'not a pair with BTC' : 'not written' }
       return c.value != null ? { text: col.show(c.value) } : { text: 'absent', title: c.absent ?? undefined }
     }),
   }))

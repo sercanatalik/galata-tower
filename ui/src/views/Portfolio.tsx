@@ -15,7 +15,7 @@ import {
   type Statistics,
   value,
 } from '../data/risk'
-import { annualisedSigma, betaOf, cellOf, chartPoints, constancy, describe, monitorOf, tailOf, groupNote, type HorizonFigures, INSTRUMENT_COLUMNS, instrumentRows, universe } from '../data/signals'
+import { annualisedSigma, betaOf, cellOf, backtestOf, chartPoints, constancy, describe, monitorOf, tailOf, groupNote, type HorizonFigures, INSTRUMENT_COLUMNS, instrumentRows, universe } from '../data/signals'
 import SignalChart from '../charts/SignalChart'
 import { forHumans, stamp } from '../kit/format'
 import { Head, Panel } from '../kit/Panel'
@@ -119,7 +119,7 @@ function Matrix({ stats }: { stats: Statistics }) {
   )
 }
 
-function SignalMatrix({ h, beta, tail }: { h: HorizonFigures; beta?: HorizonFigures; tail?: HorizonFigures }) {
+function SignalMatrix({ h, beta, tail, bt }: { h: HorizonFigures; beta?: HorizonFigures; tail?: HorizonFigures; bt?: HorizonFigures }) {
   const now = Date.now() * 1000
   return (
     <div>
@@ -136,6 +136,7 @@ function SignalMatrix({ h, beta, tail }: { h: HorizonFigures; beta?: HorizonFigu
             <th scope="col">not BTC</th>
             <th scope="col" title="one bar ahead, filtered historical simulation">VaR 99% bar</th>
             <th scope="col" title="one bar ahead, filtered historical simulation">ES 97.5% bar</th>
+            <th scope="col" title="the last 90 days of stored tails against the bars they forecast">tail backtest 97.5%</th>
           </tr>
         </thead>
         <tbody>
@@ -162,6 +163,7 @@ function SignalMatrix({ h, beta, tail }: { h: HorizonFigures; beta?: HorizonFigu
                 {tailOf(tail, a).map((text, k) => (
                   <td key={`t${k}`} className={text === 'absent' ? 'muted' : undefined}>{text}</td>
                 ))}
+                <td className={backtestOf(bt, a) === 'absent' ? 'muted' : undefined}>{backtestOf(bt, a)}</td>
               </tr>
             )
           })}
@@ -225,8 +227,9 @@ function Instruments() {
   const moments = useSignals('moments')
   const cascade = useSignals('cascade')
   const activity = useSignals('activity')
+  const leadlag = useSignals('leadlag')
   const first = (r: typeof carry) => r.data?.horizons[0]
-  const by = { carry: first(carry), jumps: first(jumps), liquidity: first(liquidity), basis: first(basis), flow: first(flow), moments: first(moments), cascade: first(cascade), activity: first(activity) }
+  const by = { carry: first(carry), jumps: first(jumps), liquidity: first(liquidity), basis: first(basis), flow: first(flow), moments: first(moments), cascade: first(cascade), activity: first(activity), leadlag: first(leadlag) }
   const rows = instrumentRows(by)
   const now = Date.now() * 1000
   if (rows.length === 0)
@@ -238,7 +241,7 @@ function Instruments() {
   return (
     <div className="card pad">
       <p className="muted mono" style={{ fontSize: 12, margin: '0 0 8px' }}>
-        {(['carry', 'jumps', 'liquidity', 'basis', 'flow', 'moments', 'cascade', 'activity'] as const).map((s) => groupNote(s, by[s], now)).join(' · ')}
+        {(['carry', 'jumps', 'liquidity', 'basis', 'flow', 'moments', 'cascade', 'activity', 'leadlag'] as const).map((s) => groupNote(s, by[s], now)).join(' · ')}
       </p>
       <table className="grid mono">
         <thead>
@@ -274,6 +277,7 @@ function Signals() {
   const turbulence = useSignals('turbulence')
   const constant = useSignals('constancy')
   const tails = useSignals('tail')
+  const backtests = useSignals('backtest')
   const monitored = useSignals('monitor')
   const at = (read: typeof beta, horizon: string) => read.data?.horizons.find((x) => x.horizon === horizon)
   const [chosen, choose] = useState<string | null>(null)
@@ -295,7 +299,7 @@ function Signals() {
                 </button>
               ))}
             </div>
-            <SignalMatrix h={h} beta={at(beta, h.horizon)} tail={at(tails, h.horizon)} />
+            <SignalMatrix h={h} beta={at(beta, h.horizon)} tail={at(tails, h.horizon)} bt={at(backtests, h.horizon)} />
             <p className="muted mono" style={{ fontSize: 12, margin: 0 }}>
               {universe(at(absorption, h.horizon), at(surprise, h.horizon), at(turbulence, h.horizon), h.tickers.length)}
             </p>
