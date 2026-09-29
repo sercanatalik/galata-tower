@@ -215,6 +215,7 @@ export const INSTRUMENT_COLUMNS: Column[] = [
   { signal: 'activity', measure: 'large_share', label: 'large %', show: (v) => `${(v * 100).toFixed(0)}%` },
   { signal: 'leadlag', measure: 'lead_ms', label: 'BTC lead ms', show: (v) => `${v > 0 ? '+' : ''}${v.toFixed(0)}`, pair: true },
   { signal: 'leadlag', measure: 'llr', label: 'lead/lag', show: (v) => v.toFixed(2), pair: true },
+  { signal: 'leadlag', measure: 'block_asymmetry', label: 'BTC first, 1 block', show: (v) => `${v > 0 ? '+' : ''}${v.toFixed(3)}`, pair: true },
 ]
 
 /** Consecutive columns of one signal, for a header row that names each group once. */

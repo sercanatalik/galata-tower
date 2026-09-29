@@ -200,11 +200,12 @@ group('the instruments panel', () => {
     const cells = [
       { measure: 'lead_ms', ticker_i: 'BTC', ticker_j: 'ETH', value: -100, absent: null, n_eff: null },
       { measure: 'llr', ticker_i: 'BTC', ticker_j: 'ETH', value: 0.626, absent: null, n_eff: null },
+      { measure: 'block_asymmetry', ticker_i: 'BTC', ticker_j: 'ETH', value: -0.0321, absent: null, n_eff: null },
     ]
     const rows = instrumentRows({ leadlag: figures({ horizon: '1h', cells }), carry: one('carry', [['ETH', 'carry_apr_7d', 0.1, null], ['BTC', 'carry_apr_7d', 0.1, null]]) })
     const byTicker = Object.fromEntries(rows.map((r) => [r.ticker, r.cells.slice(33).map((c) => c.text)]))
-    expect(byTicker.ETH).toEqual(['-100', '0.63'])
-    expect(byTicker.BTC).toEqual(['—', '—'])
+    expect(byTicker.ETH).toEqual(['-100', '0.63', '-0.032'])
+    expect(byTicker.BTC).toEqual(['—', '—', '—'])
   })
 
   it('an absent figure keeps its reason', () => {
