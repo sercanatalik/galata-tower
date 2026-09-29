@@ -1,6 +1,6 @@
 import { describe as group, expect, it } from 'vitest'
 
-import { annualisedSigma, betaOf, cellOf, chartPoints, constancy, describe, monitorOf, tailOf, groupNote, type HorizonFigures, instrumentRows, universe } from './signals'
+import { annualisedSigma, betaOf, cellOf, backtestOf, chartPoints, constancy, describe, monitorOf, tailOf, groupNote, type HorizonFigures, instrumentRows, universe } from './signals'
 
 const HOUR = 3_600_000_000
 const figures = (over: Partial<HorizonFigures> = {}): HorizonFigures => ({
@@ -103,6 +103,17 @@ group('the tail', () => {
   })
 })
 
+group('the tail backtest', () => {
+  it('the hit rate and Z2 with its light, or absent', () => {
+    const bt = (hits: number | null, z2: number | null) =>
+      figures({ cells: [{ measure: 'hit_rate_975', ticker_i: 'BTC', ticker_j: null, value: hits, absent: hits == null ? 'under 250' : null, n_eff: 300 }, { measure: 'z2_975', ticker_i: 'BTC', ticker_j: null, value: z2, absent: null, n_eff: 300 }] })
+    expect(backtestOf(bt(0.024, -0.2), 'BTC')).toBe('2.4% hits · Z2 -0.20 green')
+    expect(backtestOf(bt(0.04, -1.1), 'BTC')).toContain('yellow')
+    expect(backtestOf(bt(0.07, -2.3), 'BTC')).toContain('red')
+    expect(backtestOf(bt(null, null), 'BTC')).toBe('absent')
+  })
+})
+
 group('the history chart', () => {
   it('a gap is not a zero', () => {
     const pts = chartPoints([
@@ -156,7 +167,18 @@ group('the instruments panel', () => {
 
   it('the abnormal activity', () => {
     const rows = instrumentRows({ activity: one('activity', [['BTC', 'volume_z', 2.34, null], ['BTC', 'large_share', 0.587, null]]) })
-    expect(rows[0].cells.slice(24).map((c) => c.text)).toEqual(['2.3', '59%'])
+    expect(rows[0].cells.slice(24, 26).map((c) => c.text)).toEqual(['2.3', '59%'])
+  })
+
+  it('BTC\'s lead over each, looked up by the pair', () => {
+    const cells = [
+      { measure: 'lead_ms', ticker_i: 'BTC', ticker_j: 'ETH', value: -100, absent: null, n_eff: null },
+      { measure: 'llr', ticker_i: 'BTC', ticker_j: 'ETH', value: 0.626, absent: null, n_eff: null },
+    ]
+    const rows = instrumentRows({ leadlag: figures({ horizon: '1h', cells }), carry: one('carry', [['ETH', 'carry_apr_7d', 0.1, null], ['BTC', 'carry_apr_7d', 0.1, null]]) })
+    const byTicker = Object.fromEntries(rows.map((r) => [r.ticker, r.cells.slice(26).map((c) => c.text)]))
+    expect(byTicker.ETH).toEqual(['-100', '0.63'])
+    expect(byTicker.BTC).toEqual(['—', '—'])
   })
 
   it('an absent figure keeps its reason', () => {
