@@ -187,29 +187,15 @@ fn read_kind(
 }
 
 fn text<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a StringArray, TapeError> {
-    column(batch, name, "Utf8")
+    crate::column!(batch, name, StringArray, "Utf8")
 }
 
 fn int<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a Int64Array, TapeError> {
-    column(batch, name, "Int64")
+    crate::column!(batch, name, Int64Array, "Int64")
 }
 
 fn dec<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a Decimal128Array, TapeError> {
-    column(batch, name, "Decimal128")
-}
-
-fn column<'a, T: 'static>(
-    batch: &'a RecordBatch,
-    name: &str,
-    want: &str,
-) -> Result<&'a T, TapeError> {
-    batch
-        .column_by_name(name)
-        .and_then(|c| c.as_any().downcast_ref::<T>())
-        .ok_or_else(|| TapeError::Unrenderable {
-            column: name.to_owned(),
-            data_type: format!("expected {want}"),
-        })
+    crate::column!(batch, name, Decimal128Array, "Decimal128")
 }
 
 /// The newest arrival each venue's tape holds, across every served dataset.
@@ -495,7 +481,7 @@ pub fn candles(
         let low = dec(batch, "low")?;
         let close = dec(batch, "close")?;
         let volume = dec(batch, "volume")?;
-        let is_final = column::<BooleanArray>(batch, "is_final", "Boolean").ok();
+        let is_final = crate::column!(batch, "is_final", BooleanArray, "Boolean").ok();
         if let DataType::Decimal128(_, s) = open.data_type() {
             scale = *s;
         }

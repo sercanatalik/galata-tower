@@ -9,10 +9,12 @@
 //! One process serves both halves: the API below, and `ui/dist` embedded at
 //! compile time, so there is no node process in a deployment.
 
+mod background;
 mod failures;
 mod latest;
 mod layout;
 mod portfolio;
+mod routes;
 mod shape;
 mod signals;
 mod tape;
@@ -20,21 +22,14 @@ mod tape;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
-use axum::extract::{Path as UrlPath, Query, State};
 use axum::http::{StatusCode, header};
-use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::{Json, Router};
-use galata_broker::{BrokerIdentity, NatsSubscriber};
 use rust_embed::Embed;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tokio::sync::{RwLock, broadcast};
-use tokio_stream::Stream;
-use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use utoipa::{OpenApi, ToSchema};
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
@@ -60,21 +55,21 @@ struct Screen;
 
 /// Where the record lives, and the live status every browser shares.
 #[derive(Clone)]
-struct Tower {
+pub(crate) struct Tower {
     /// The archive root: `var/archive` in a datawatch deployment.
-    archive: PathBuf,
+    pub(crate) archive: PathBuf,
     /// The tape root: `var/tape` beside it.
-    tape: PathBuf,
+    pub(crate) tape: PathBuf,
     /// Where the ledger writes its reports: `ledger-fold-<venue>.json`.
     /// Read, never written, and never the ledger's own root.
-    reports: PathBuf,
+    pub(crate) reports: PathBuf,
     /// One subscription's traffic, fanned to every connected screen.
     ///
     /// Two kinds of thing on one channel, which is the shape the predecessor's
     /// tower used (`Live::Entry` / `Live::Alert`) and for the same reason: a
     /// second channel would need a second subscription per browser and a
     /// second lag policy, and would buy nothing.
-    status: broadcast::Sender<Live>,
+    pub(crate) status: broadcast::Sender<Live>,
     /// The newest snapshot per venue.
     ///
     /// **Insert or replace, never remove** -- carried from the predecessor's
@@ -86,49 +81,49 @@ struct Tower {
     /// Read-mostly: one writer at the publisher's cadence, a reader per
     /// connecting browser and per lag. `Arc<Snapshot>` so a board frame clones
     /// pointers rather than payloads.
-    board: Arc<RwLock<BTreeMap<String, Arc<Snapshot>>>>,
+    pub(crate) board: Arc<RwLock<BTreeMap<String, Arc<Snapshot>>>>,
     /// Whether there is a broker at all, for a browser that connects mid-outage.
-    broker: Arc<RwLock<BrokerState>>,
+    pub(crate) broker: Arc<RwLock<BrokerState>>,
     /// Each kind's durable bound, as the watch last read it.
-    bounds: Arc<RwLock<tape::Bounds>>,
+    pub(crate) bounds: Arc<RwLock<tape::Bounds>>,
     /// Each root's newest arrival per venue, as the watch last read it.
-    frontiers: Arc<RwLock<Frontiers>>,
+    pub(crate) frontiers: Arc<RwLock<Frontiers>>,
     /// The venues' normalisers, for reading prices off the archive's tail.
-    normalisers: Arc<latest::Normalisers>,
+    pub(crate) normalisers: Arc<latest::Normalisers>,
     /// The latest prices, shared by every browser for a second.
-    latest: Arc<latest::Shared>,
+    pub(crate) latest: Arc<latest::Shared>,
     /// The partition listing, and the directory stamps it is valid for.
-    listing: Arc<Listing>,
+    pub(crate) listing: Arc<Listing>,
     /// The tape's layout problems, and the segment paths they were checked for.
-    layout: Arc<layout::Cache>,
+    pub(crate) layout: Arc<layout::Cache>,
 }
 
 /// The cached partition listing, with the stamps it is valid for.
-type Listing = std::sync::Mutex<Option<(Stamp, Vec<PathBuf>)>>;
+pub(crate) type Listing = std::sync::Mutex<Option<(Stamp, Vec<PathBuf>)>>;
 
 /// Modification times of the root, `venue=` and `kind=` directories: they change when a partition appears or goes.
-type Stamp = Vec<(PathBuf, Option<SystemTime>)>;
+pub(crate) type Stamp = Vec<(PathBuf, Option<SystemTime>)>;
 
 /// Each root's newest arrival per venue, on our clock.
 #[derive(Clone, Debug, Default)]
-struct Frontiers {
-    archive: shape::Frontier,
-    tape: shape::Frontier,
+pub(crate) struct Frontiers {
+    pub(crate) archive: shape::Frontier,
+    pub(crate) tape: shape::Frontier,
 }
 
 /// One venue's frontier in each root. Both are arrival times on this machine's clock.
 #[derive(Clone, Debug, Serialize, ToSchema)]
-struct VenueFrontier {
+pub(crate) struct VenueFrontier {
     /// The venue.
-    venue: String,
+    pub venue: String,
     /// The newest arrival the archive holds, or null.
-    archive_micros: Option<i64>,
+    pub archive_micros: Option<i64>,
     /// The newest arrival the tape holds, or null.
-    tape_micros: Option<i64>,
+    pub tape_micros: Option<i64>,
 }
 
 impl Frontiers {
-    fn by_venue(&self) -> Vec<VenueFrontier> {
+    pub(crate) fn by_venue(&self) -> Vec<VenueFrontier> {
         let venues: std::collections::BTreeSet<&String> =
             self.archive.keys().chain(self.tape.keys()).collect();
         venues
@@ -148,7 +143,7 @@ impl Frontiers {
 /// from. The second is not decoration: without it an outage and a quiet venue
 /// look identical to a browser, which is the defect this type exists to fix.
 #[derive(Clone, Debug)]
-enum Live {
+pub(crate) enum Live {
     Status(Arc<Snapshot>),
     Broker(BrokerState),
     /// One kind's tape grew. **Not the rows** — the route that serves them
@@ -161,11 +156,11 @@ enum Live {
 
 /// A venue's archive frontier moved.
 #[derive(Clone, Debug, Serialize, ToSchema)]
-struct ArchiveMoved {
+pub(crate) struct ArchiveMoved {
     /// Whose archive.
-    venue: String,
+    pub venue: String,
     /// The newest arrival it now holds, our clock.
-    frontier_micros: i64,
+    pub frontier_micros: i64,
 }
 
 /// One venue's tape for one kind has a new durable bound.
@@ -173,13 +168,13 @@ struct ArchiveMoved {
 /// Per venue, because each venue numbers its own stream: one event per venue
 /// that moved, rather than a kind's whole map re-sent for the browser to diff.
 #[derive(Clone, Debug, Serialize, ToSchema)]
-struct TapeMoved {
+pub(crate) struct TapeMoved {
     /// Which dataset, as `/v1/tape/{kind}` spells it.
-    kind: String,
+    pub kind: String,
     /// Whose stream moved.
-    venue: String,
+    pub venue: String,
     /// The new durable position, in that venue's sequence.
-    bound: i64,
+    pub bound: i64,
 }
 
 /// Whether the tower has a status subscription — **reported, not judged**.
@@ -189,19 +184,19 @@ struct TapeMoved {
 /// the operator's call, and a tower that decided it would be deciding with
 /// less information than they have.
 #[derive(Clone, Debug, Default, Serialize, ToSchema)]
-struct BrokerState {
+pub(crate) struct BrokerState {
     /// True between a subscription being established and its ending.
-    connected: bool,
+    pub connected: bool,
     /// Connect attempts since the tower last held a subscription.
     ///
     /// Zero while connected. It climbs during an outage, which is what makes
     /// a misconfiguration visible: a wrong password is retried for ever, and
     /// this is what says so.
-    attempts: u32,
+    pub attempts: u32,
     /// What the broker said when it last refused, verbatim.
     ///
     /// The identity type cannot print the password, so this is safe to show.
-    refusal: Option<String>,
+    pub refusal: Option<String>,
 }
 
 /// What a browser is handed on connect, and after a gap.
@@ -210,9 +205,9 @@ struct BrokerState {
 /// connection and once per lag, not once per snapshot, and a lifetime in the
 /// contract's schema would buy nothing at that rate.
 #[derive(Serialize, ToSchema)]
-struct Board {
+pub(crate) struct Board {
     /// Whether these venues are current or a record of an interrupted stream.
-    broker: BrokerState,
+    pub broker: BrokerState,
     /// Each kind's durable bound, for the kinds that have written anything.
     ///
     /// Here as well as in the event, for the same reason the broker's state
@@ -220,9 +215,9 @@ struct Board {
     /// connecting into a quiet hour would otherwise learn nothing until the
     /// next move, which may never come.
     #[schema(inline)]
-    bounds: tape::Bounds,
+    pub bounds: tape::Bounds,
     /// Every venue seen since the tower started, newest snapshot each.
-    venues: Vec<Snapshot>,
+    pub venues: Vec<Snapshot>,
 }
 
 /// One venue's status, exactly as it was published.
@@ -231,14 +226,14 @@ struct Board {
 /// screen's types come from the contract, and a tower that re-typed the
 /// snapshot would be a second statement of it free to disagree.
 #[derive(Clone, Debug, Serialize, ToSchema)]
-struct Snapshot {
+pub(crate) struct Snapshot {
     /// The subject it arrived on, e.g. `status.hyperliquid`.
-    subject: String,
+    pub subject: String,
     /// The venue, taken from the subject.
-    venue: String,
+    pub venue: String,
     /// The snapshot body, as published.
     #[schema(value_type = Object)]
-    body: serde_json::Value,
+    pub body: serde_json::Value,
 }
 
 /// **Stated, not derived.** The publisher sends one snapshot per venue per
@@ -251,11 +246,11 @@ const STATUS_BACKLOG: usize = 64;
 
 /// One partition of the record, as the store lists it.
 #[derive(Serialize, ToSchema)]
-struct Partition {
+pub(crate) struct Partition {
     /// Its path relative to the archive root.
-    path: String,
+    pub path: String,
     /// How many segments it holds now. Counted on every read, since an open day grows.
-    segments: usize,
+    pub segments: usize,
 }
 
 /// A closed day still holding more segments than compaction should have left.
@@ -263,11 +258,11 @@ struct Partition {
 /// **Reported, never judged.** The number is here; whether it is bad belongs to
 /// whoever set the threshold.
 #[derive(Serialize, ToSchema)]
-struct Overdue {
+pub(crate) struct Overdue {
     /// The partition.
-    path: String,
+    pub path: String,
     /// How many segments it still holds.
-    segments: usize,
+    pub segments: usize,
 }
 
 /// What this tower reads, and how the tape may be narrowed.
@@ -276,17 +271,17 @@ struct Overdue {
 /// read cheap — so it is served rather than duplicated in TypeScript, where it
 /// would be a second copy free to disagree.
 #[derive(Serialize, ToSchema)]
-struct About {
+pub(crate) struct About {
     /// The archive root being watched.
-    archive: Root,
+    pub archive: Root,
     /// The tape root the windowed reads come from.
     ///
     /// **Reported for the first time on 2026-09-23.** Five routes read it and
     /// nothing showed it, so a surface named `about` did not describe half of
     /// what this process was doing.
-    tape: Root,
+    pub tape: Root,
     /// The tape columns a reader can prune on, from the schema itself.
-    prune_on: Vec<String>,
+    pub prune_on: Vec<String>,
     /// What is wrong with the tape's layout, in `galata-datawatch`'s own words.
     ///
     /// **Empty is the normal case and the interesting one is not.** A tape
@@ -300,9 +295,9 @@ struct About {
     /// `galata-tape-rebuild` has printed this on every run since it was
     /// written. This tower links the same crate, serves the same tape, and
     /// never asked.
-    tape_problems: Vec<String>,
+    pub tape_problems: Vec<String>,
     /// Each root's newest arrival per venue. Their difference is how far the tape lags the archive.
-    frontiers: Vec<VenueFrontier>,
+    pub frontiers: Vec<VenueFrontier>,
 }
 
 /// One directory this tower reads.
@@ -320,9 +315,9 @@ struct About {
 /// that introduced this said the screen check had not run, because the browser
 /// was unavailable at the time; it has since.
 #[derive(Serialize, ToSchema)]
-struct Root {
+pub(crate) struct Root {
     /// The path the tower was given.
-    path: String,
+    pub path: String,
     /// The environment variable that gave it.
     ///
     /// **Named because that is what gets fixed.** *"/tmp/nope is not there"*
@@ -330,17 +325,17 @@ struct Root {
     /// This tree names the thing to change everywhere it matters — a broker
     /// refusal carries `GALATA_BROKER_PASSWORD_READER` rather than "a
     /// password".
-    var: String,
+    pub var: String,
     /// Whether it is there and can be listed.
     ///
     /// **Listed, not merely present.** A directory that exists and cannot be
     /// read is a different failure with the same symptom, and every route here
     /// finds out by listing it anyway.
-    readable: bool,
+    pub readable: bool,
 }
 
 impl Root {
-    fn of(path: &std::path::Path, var: &str) -> Root {
+    pub(crate) fn of(path: &std::path::Path, var: &str) -> Root {
         Root {
             path: path.display().to_string(),
             var: var.to_owned(),
@@ -349,67 +344,34 @@ impl Root {
     }
 }
 
-/// The partitions the record holds.
-///
-/// A walk that cannot run is a refusal naming the root, never an empty list.
-#[utoipa::path(
-    get,
-    path = "/v1/partitions",
-    responses(
-        (status = 200, description = "Every partition in the archive", body = Vec<Partition>),
-        (status = 500, description = "The archive root could not be listed", body = String),
-    ),
-)]
-async fn partitions(State(tower): State<Tower>) -> Response {
-    let root = tower.archive.clone();
-    let listing = Arc::clone(&tower.listing);
-    let walked = tokio::task::spawn_blocking(move || {
-        std::fs::read_dir(&root)?;
-        let found = cached_partitions(&root, &listing)
-            .into_iter()
-            .map(|dir| {
-                let segments = galata_segments::list_segments(&dir).len();
-                (dir, segments)
-            })
-            .collect::<Vec<_>>();
-        Ok::<_, std::io::Error>(found)
-    })
-    .await;
-    let found = match walked {
-        Ok(Ok(found)) => found,
-        Ok(Err(refusal)) => return refuse_root(&tower.archive, &refusal.to_string()),
-        Err(join) => return refuse_root(&tower.archive, &join.to_string()),
-    };
-    Json(
-        found
-            .into_iter()
-            .map(|(path, segments)| Partition {
-                path: path
-                    .strip_prefix(&tower.archive)
-                    .unwrap_or(&path)
-                    .display()
-                    .to_string(),
-                segments,
-            })
-            .collect::<Vec<_>>(),
-    )
-    .into_response()
+/// The screen, or its index for any path the client routes itself.
+async fn screen(uri: axum::http::Uri) -> Response {
+    let path = uri.path().trim_start_matches('/');
+    let file = Screen::get(path).or_else(|| Screen::get("index.html"));
+    match file {
+        Some(content) => {
+            let mime = mime_guess_for(path);
+            ([(header::CONTENT_TYPE, mime)], content.data.into_owned()).into_response()
+        }
+        None => (StatusCode::NOT_FOUND, "no screen is embedded in this build").into_response(),
+    }
 }
 
-/// A 500 that names the root and what went wrong.
-fn refuse_root(root: &std::path::Path, why: &str) -> Response {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        format!(
-            "the archive root {} could not be listed: {why}",
-            root.display()
-        ),
-    )
-        .into_response()
+/// Enough of a type table for what a built screen actually contains.
+fn mime_guess_for(path: &str) -> &'static str {
+    match path.rsplit('.').next() {
+        Some("js") => "text/javascript",
+        Some("css") => "text/css",
+        Some("svg") => "image/svg+xml",
+        Some("json") => "application/json",
+        Some("woff2") => "font/woff2",
+        Some("woff") => "font/woff",
+        _ => "text/html; charset=utf-8",
+    }
 }
 
 /// The partition listing, walked again only when a partition directory may have appeared or gone.
-fn cached_partitions(root: &std::path::Path, listing: &Listing) -> Vec<PathBuf> {
+pub(crate) fn cached_partitions(root: &std::path::Path, listing: &Listing) -> Vec<PathBuf> {
     let stamp = stamp_of(root);
     let mut held = listing.lock().unwrap_or_else(|p| p.into_inner());
     if let Some((seen, found)) = held.as_ref()
@@ -448,87 +410,15 @@ fn stamp_of(root: &std::path::Path) -> Stamp {
     stamp
 }
 
-/// How many segments a closed partition may hold before it is worth naming.
-///
-/// **One, and that is not arbitrary.** Compaction leaves one segment per
-/// partition, so *more than one* is exactly *not compacted since it closed*.
-/// Anything above this would be a judgement about how much neglect is
-/// acceptable, which is the operator's — which is why it is a parameter.
-const COMPACTED_TO: usize = 1;
-
-/// What a caller may narrow the overdue listing by.
-#[derive(Deserialize, utoipa::IntoParams)]
-struct OverdueQuery {
-    /// The most segments a closed partition may hold. Defaults to
-    /// [`COMPACTED_TO`]. Zero lists every closed partition holding anything,
-    /// which shows the shape of the store rather than only its problems.
-    max_segments: Option<usize>,
-}
-
-/// Closed days still holding more segments than compaction should have left.
-///
-/// **Closed means closed.** Until 2026-09-22 this passed `"9999-99-99"` as the
-/// current day, so every dated partition counted as closed — including the one
-/// being written. Six of twelve rows on the screen were the day still being
-/// captured, which holds many small segments by design, under a heading
-/// reading *Closed*.
-///
-/// That is the drift the calendar module warns about in its own header: *"a
-/// second implementation does not fail when it drifts — it disagrees."* The
-/// day is now `date_of` on this tower's clock — the same function that NAMES
-/// the partitions — so there is one calendar and one definition of closed,
-/// shared with the `galata-compact` that acts on it.
-///
-/// It also cost the surface its purpose: this exists to catch *"the wrong var
-/// directory, the stale binary and the `--dry-run` left in"*, and all three
-/// were buried under guaranteed daily noise.
-#[utoipa::path(
-    get,
-    path = "/v1/overdue",
-    params(OverdueQuery),
-    responses((status = 200, description = "Closed days still holding segments", body = Vec<Overdue>)),
-)]
-async fn overdue(
-    State(tower): State<Tower>,
-    Query(query): Query<OverdueQuery>,
-) -> Json<Vec<Overdue>> {
-    let root = tower.archive.clone();
-    // **The clock is read here, and the judgement takes the day.** The library
-    // splits these for a stated reason — so the rule stays replayable and a
-    // test can drive it without waiting for midnight — and the same split is
-    // what makes the boundary testable at all.
-    let today = today_utc();
-    let max_segments = query.max_segments.unwrap_or(COMPACTED_TO);
-    // A listing walks the store, so it does not belong on the async executor.
-    let found = tokio::task::spawn_blocking(move || {
-        galata_segments::overdue_closed(&root, &today, max_segments)
-    })
-    .await
-    .unwrap_or_default();
-    Json(
-        found
-            .into_iter()
-            .map(|(path, segments)| Overdue {
-                path: path
-                    .strip_prefix(&tower.archive)
-                    .unwrap_or(&path)
-                    .display()
-                    .to_string(),
-                segments,
-            })
-            .collect(),
-    )
-}
-
 /// The current UTC day, as the partitions spell it.
 ///
 /// `galata_datawatch::date_of` and nothing else: a partition is NAMED by that
 /// function, and whether it is closed is decided by comparing against it. A
 /// second way of formatting the day would not fail when it drifted — it would
 /// disagree, which is the failure this whole route just had.
-fn today_utc() -> String {
+pub(crate) fn today_utc() -> String {
     let micros = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
+        .duration_since(SystemTime::UNIX_EPOCH)
         .map(|since| i64::try_from(since.as_micros()).unwrap_or(i64::MAX))
         // Before the epoch is a clock that is very wrong; naming day zero is
         // the conservative answer, because it makes every partition closed
@@ -538,494 +428,17 @@ fn today_utc() -> String {
     galata_datawatch::date_of(micros)
 }
 
-/// What this tower reads.
-#[utoipa::path(
-    get,
-    path = "/v1/about",
-    responses((status = 200, description = "The archive root and the tape's prune columns", body = About)),
-)]
-async fn about(State(tower): State<Tower>) -> Response {
-    // **Off the runtime, and once per change to the tape.** `check_layout`
-    // compares ranges per label, so it opens every segment's footer: 10,063
-    // on 2026-09-28, 4.9 s. Asked here on every request, in this async fn, it
-    // stalled every request on the same worker; the tower stopped answering.
-    // `layout::problems` reuses the last check while the segment paths (a
-    // segment's name is its range) are unchanged, so a rebuild that writes or
-    // removes one is still seen on the next request.
-    let (tape, cache) = (tower.tape.clone(), Arc::clone(&tower.layout));
-    let tape_problems =
-        match tokio::task::spawn_blocking(move || layout::problems(&tape, &cache, layout::check))
-            .await
-        {
-            Ok(found) => found,
-            Err(join) => return unfinished(join),
-        };
-    Json(About {
-        archive: Root::of(&tower.archive, "GALATA_ARCHIVE"),
-        tape: Root::of(&tower.tape, "GALATA_TAPE"),
-        prune_on: galata_datawatch::tape::schema::PRUNE_ON
-            .iter()
-            .map(|column| (*column).to_owned())
-            .collect(),
-        tape_problems,
-        frontiers: tower.frontiers.read().await.by_venue(),
-    })
-    .into_response()
-}
-
-/// The screen, or its index for any path the client routes itself.
-async fn screen(uri: axum::http::Uri) -> Response {
-    let path = uri.path().trim_start_matches('/');
-    let file = Screen::get(path).or_else(|| Screen::get("index.html"));
-    match file {
-        Some(content) => {
-            let mime = mime_guess_for(path);
-            ([(header::CONTENT_TYPE, mime)], content.data.into_owned()).into_response()
-        }
-        None => (StatusCode::NOT_FOUND, "no screen is embedded in this build").into_response(),
-    }
-}
-
-/// Enough of a type table for what a built screen actually contains.
-fn mime_guess_for(path: &str) -> &'static str {
-    match path.rsplit('.').next() {
-        Some("js") => "text/javascript",
-        Some("css") => "text/css",
-        Some("svg") => "image/svg+xml",
-        Some("json") => "application/json",
-        Some("woff2") => "font/woff2",
-        Some("woff") => "font/woff",
-        _ => "text/html; charset=utf-8",
-    }
-}
-
-/// One subscription, for every browser.
-///
-/// Opened once at boot and outliving every request: a subscription per browser
-/// would multiply the broker's fan-out by the number of open tabs and fire the
-/// grant check on every page load.
-///
-/// **The tower starts whether or not a broker answers.** The record is a fact
-/// on disk and does not need a bus to be true, so a refused connection is
-/// reported and the process continues serving the half that works.
-///
-/// **And it keeps trying.** Until 2026-09-22 this returned on a refusal and
-/// again when an established subscription ended, so a tower that came up one
-/// second before its broker was accepting stayed statusless until somebody
-/// restarted it — which is exactly what happened while verifying the change
-/// before this one. There is no attempt count at which stopping is better than
-/// continuing: a broker absent for an hour may return in the next minute, and
-/// a tower that gave up is one somebody has to notice first.
-///
-/// The retry lives here rather than in `galata-broker`. `async-nats` has
-/// `retry_on_initial_connect()` and `connect_as` deliberately does not set it,
-/// because the capture needs *a broker that does not answer* (an outage: warn
-/// and carry on) to stay distinct from *a broker that refuses the identity* (a
-/// misconfiguration: exit non-zero). Setting it there would erase that.
-fn subscribe_to_status(
-    addr: String,
-    status: broadcast::Sender<Live>,
-    board: Arc<RwLock<BTreeMap<String, Arc<Snapshot>>>>,
-    broker: Arc<RwLock<BrokerState>>,
-) {
-    tokio::spawn(async move {
-        let identity = BrokerIdentity::new(
-            "reader",
-            std::env::var(galata_broker::password_var("reader")).unwrap_or_default(),
-            galata_broker::password_var("reader"),
-        );
-        let mut wait = FIRST_RETRY;
-        let mut attempts: u32 = 0;
-        loop {
-            attempts = attempts.saturating_add(1);
-            match NatsSubscriber::connect(&addr, &identity, "status.>").await {
-                Ok(mut subscriber) => {
-                    tracing::info!(attempts, "subscribed to status.>");
-                    // The ladder is reset by a subscription, not by a
-                    // connection: a broker that accepts and immediately drops
-                    // is still an outage, and backing off from the floor each
-                    // time is the point of the floor being a whole second.
-                    wait = FIRST_RETRY;
-                    attempts = 0;
-                    say(
-                        &broker,
-                        &status,
-                        BrokerState {
-                            connected: true,
-                            attempts: 0,
-                            refusal: None,
-                        },
-                    )
-                    .await;
-                    consume(&mut subscriber, &status, &board, &broker).await;
-                    tracing::warn!("the status subscription ended");
-                    say(
-                        &broker,
-                        &status,
-                        BrokerState {
-                            connected: false,
-                            attempts: 0,
-                            refusal: None,
-                        },
-                    )
-                    .await;
-                }
-                Err(refusal) => {
-                    // Named, not silent, and the password is not in it: the
-                    // identity type cannot print it.
-                    tracing::warn!(%refusal, attempts, "no status stream; the record is still served");
-                    say(
-                        &broker,
-                        &status,
-                        BrokerState {
-                            connected: false,
-                            attempts,
-                            refusal: Some(refusal.to_string()),
-                        },
-                    )
-                    .await;
-                }
-            }
-            tokio::time::sleep(jittered(wait)).await;
-            wait = (wait * 2).min(LONGEST_RETRY);
-        }
-    });
-}
-
-/// One second, then two, then four, to thirty.
-///
-/// The ceiling matters more than the floor. A race at boot should cost about a
-/// second, and an hour of absence should not be an hour of connect attempts;
-/// thirty seconds is slow enough to be free and quick enough that a returning
-/// broker is picked up before anyone reloads the page.
-const FIRST_RETRY: Duration = Duration::from_secs(1);
-const LONGEST_RETRY: Duration = Duration::from_secs(30);
-
-/// The wait, give or take a quarter of itself.
-///
-/// **Jitter, for the reason this tree already gives in the capture's reconnect
-/// path**: retries that fall into lockstep with a broker restarting on a timer
-/// miss it every time, and several towers coming back together should not
-/// arrive as one. It comes from the clock rather than from `rand`, because a
-/// dependency for ±25% on a retry delay is a dependency for nothing — this
-/// needs successive waits to differ, not to be unguessable.
-fn jittered(wait: Duration) -> Duration {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|since| since.subsec_nanos())
-        .unwrap_or(0);
-    let band = (wait.as_millis() as u64) / 2;
-    let offset = if band == 0 {
-        0
-    } else {
-        u64::from(nanos) % band
-    };
-    wait - wait / 4 + Duration::from_millis(offset)
-}
-
-/// Record a broker state and tell every connected browser.
-///
-/// Both, always: the event is the notification that it changed, and the stored
-/// value is what a browser connecting a moment later is handed. Writing one
-/// without the other is how a state stream becomes an event stream.
-async fn say(
-    broker: &Arc<RwLock<BrokerState>>,
-    status: &broadcast::Sender<Live>,
-    next: BrokerState,
-) {
-    *broker.write().await = next.clone();
-    let _ = status.send(Live::Broker(next));
-}
-
-/// Drain one subscription until it ends, reporting the transport meanwhile.
-///
-/// Separated from the supervisor so that the loop above reads as what it is —
-/// connect, consume, back off, repeat — rather than as three levels of nesting.
-///
-/// **There are two retries here, and only one of them is ours.** `async-nats`
-/// reconnects an ESTABLISHED connection by itself, which is why the first
-/// version of this change passed every test above and still claimed a broker
-/// with `nats-server` killed: the subscription had not ended, so nothing
-/// noticed. The loop above handles what the client will not — a connection
-/// never established, since `connect_as` deliberately leaves
-/// `retry_on_initial_connect` unset, and a subscription that genuinely ends.
-/// This watches the client's own state and says what it sees.
-async fn consume(
-    subscriber: &mut NatsSubscriber,
-    status: &broadcast::Sender<Live>,
-    board: &Arc<RwLock<BTreeMap<String, Arc<Snapshot>>>>,
-    broker: &Arc<RwLock<BrokerState>>,
-) {
-    // A second is well under the publisher's cadence, so an outage is on the
-    // screen before the venue ages visibly. Polling rather than subscribing to
-    // the client's event stream keeps the broker crate's surface to one
-    // read-only accessor.
-    let mut watch = tokio::time::interval(Duration::from_secs(1));
-    watch.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut was_up = true;
-    loop {
-        let (subject, payload) = tokio::select! {
-            received = subscriber.next_addressed() => match received {
-                Some(pair) => pair,
-                None => return,
-            },
-            _ = watch.tick() => {
-                let up = subscriber.connected();
-                if up != was_up {
-                    was_up = up;
-                    tracing::warn!(connected = up, "the broker's transport changed");
-                    say(
-                        broker,
-                        status,
-                        BrokerState {
-                            connected: up,
-                            attempts: 0,
-                            refusal: (!up).then(|| {
-                                "the connection dropped; the client is reconnecting".to_owned()
-                            }),
-                        },
-                    )
-                    .await;
-                }
-                continue;
-            }
-        };
-        // The venue is the subject's second token. A subject that does not
-        // carry one is not a status subject, and is skipped rather than
-        // guessed at.
-        let Some(venue) = subject.split('.').nth(1) else {
-            continue;
-        };
-        let body = serde_json::from_slice(&payload).unwrap_or(serde_json::Value::Null);
-        let snapshot = Arc::new(Snapshot {
-            subject: subject.clone(),
-            venue: venue.to_owned(),
-            body,
-        });
-        // Insert or replace, never remove.
-        board
-            .write()
-            .await
-            .insert(venue.to_owned(), Arc::clone(&snapshot));
-        // `send` fails only when nobody is listening, which is the ordinary
-        // case for a tower with no browser open.
-        let _ = status.send(Live::Status(snapshot));
-        // A message is proof the transport is up, whatever the last tick saw.
-        if !was_up {
-            was_up = true;
-            say(
-                broker,
-                status,
-                BrokerState {
-                    connected: true,
-                    attempts: 0,
-                    refusal: None,
-                },
-            )
-            .await;
-        }
-    }
-}
-
-/// How often the record is asked whether it moved.
-///
-/// **Below the compactor's own cadence, deliberately.** The tape is durable
-/// parquet; measuring it more often samples a file that has not been rewritten.
-/// One second at 53µs a kind is 265µs a second for the five served kinds —
-/// which is the measurement that made a server-side watch the obvious shape
-/// rather than a thing each browser does.
-const TAPE_WATCH: Duration = Duration::from_secs(1);
-
-/// Watch the record, and say when it moves.
-///
-/// **Made once, for every browser.** Asking whether the tape grew is 53µs;
-/// reading it is 2.85ms. The cheap question is asked continuously here so that
-/// the expensive answer is fetched only when it changed — where a
-/// `refetchInterval` in the browser would pay the expensive half on a timer to
-/// usually learn nothing, and a conditional request would still cost a round
-/// trip per browser per interval to be told nothing happened. The tower
-/// already holds an open channel to every browser; not asking is cheaper than
-/// a cheap way of asking.
-fn watch_the_record(
-    tape: PathBuf,
-    archive: PathBuf,
-    status: broadcast::Sender<Live>,
-    bounds: Arc<RwLock<tape::Bounds>>,
-    frontiers: Arc<RwLock<Frontiers>>,
-) {
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(TAPE_WATCH);
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let mut last = tape::Bounds::new();
-        // Reported on the EDGE. A tape root that is not there is one log line,
-        // not one a second for as long as the tower runs.
-        let mut said_empty = false;
-        // **One label cache for the watch's lifetime.** A bound reads each
-        // segment's venue label from its footer; measured at 25.7 ms per kind
-        // cold against 3.3 ms warm for 1,000 segments. A segment is immutable
-        // once renamed, so a label read once stays read.
-        let labels = Arc::new(galata_datawatch::tape::LabelCache::default());
-        let mut ticks: u64 = 0;
-        loop {
-            ticker.tick().await;
-            ticks += 1;
-            // Off the runtime: this opens files. Short is not the same as
-            // non-blocking, and five of them share one thread with every open
-            // SSE stream.
-            let root = tape.clone();
-            let cache = Arc::clone(&labels);
-            let prune = ticks.is_multiple_of(60);
-            let Ok(found) = tokio::task::spawn_blocking(move || {
-                // Once a minute, forget segments compaction or replacement
-                // removed. It only bounds memory: a removed segment is never
-                // listed, so its entry is never consulted.
-                if prune {
-                    cache.prune();
-                }
-                tape::bounds(&root, &cache)
-            })
-            .await
-            else {
-                continue;
-            };
-
-            if found.is_empty() {
-                if !said_empty {
-                    said_empty = true;
-                    tracing::info!(
-                        root = %tape.display(),
-                        "no tape has written anything yet; the screen will say so"
-                    );
-                }
-            } else {
-                said_empty = false;
-            }
-
-            let tape_moved = moves(&last, &found);
-            let refresh_tape = ticks == 1 || !tape_moved.is_empty();
-            for moved in tape_moved {
-                let _ = status.send(Live::Tape(moved));
-            }
-            last = found.clone();
-            *bounds.write().await = found;
-
-            // The archive's frontier is read from names alone; the tape's only when the tape moved.
-            let (archive_root, tape_root) = (archive.clone(), tape.clone());
-            let Ok((arrived, tape_edge)) = tokio::task::spawn_blocking(move || {
-                let tape_edge = refresh_tape.then(|| shape::tape_frontier(&tape_root));
-                (shape::archive_frontier(&archive_root), tape_edge)
-            })
-            .await
-            else {
-                continue;
-            };
-            let mut held = frontiers.write().await;
-            for (venue, &edge) in &arrived {
-                if held.archive.get(venue) != Some(&edge) {
-                    let _ = status.send(Live::Archive(ArchiveMoved {
-                        venue: venue.clone(),
-                        frontier_micros: edge,
-                    }));
-                }
-            }
-            held.archive = arrived;
-            if let Some(edge) = tape_edge {
-                held.tape = edge;
-            }
-        }
-    });
-}
-
-/// Which kinds moved, given what was last seen and what is there now.
-///
-/// Separated from the watch so it can be held by tests: a loop that only ever
-/// runs against a real tape is a loop whose backwards case is reasoned about
-/// rather than exercised, and the backwards case is the one that would redraw
-/// every chart if it were wrong.
-fn moves(last: &tape::Bounds, found: &tape::Bounds) -> Vec<TapeMoved> {
-    let mut moved = Vec::new();
-    for (kind, venues) in found {
-        for (venue, position) in venues {
-            match last.get(kind).and_then(|seen| seen.get(venue)) {
-                // Unchanged. The ordinary case, and it sends nothing.
-                Some(previous) if previous == position => {}
-                // **Backwards is not a move.** It means the store was replaced
-                // underneath the tower, which is worth a line in the log and is
-                // not worth a chart redraw.
-                Some(previous) if previous > position => tracing::warn!(
-                    %kind, %venue, previous, position,
-                    "the tape's bound went backwards; the store was replaced"
-                ),
-                _ => moved.push(TapeMoved {
-                    kind: kind.clone(),
-                    venue: venue.clone(),
-                    bound: *position,
-                }),
-            }
-        }
-    }
-    moved
-}
-
-/// Every venue's status, as it arrives.
-///
-/// SSE rather than a WebSocket: the traffic is one-directional, and the
-/// browser's `EventSource` reconnects, backs off and honours `retry:` without a
-/// line of client code.
-#[utoipa::path(
-    get,
-    path = "/v1/status",
-    responses((status = 200, description = "A server-sent event stream: a board frame on connect, then status, broker, tape and lagged events", body = Snapshot)),
-)]
-async fn status(
-    State(tower): State<Tower>,
-) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
-    // **Subscribe FIRST, then read the board.** A snapshot arriving between the
-    // two is then delivered by the stream rather than lost between them. The
-    // other order has a hole exactly one message wide -- the kind of race that
-    // appears once a week in production and never in a test.
-    let mut rx = tower.status.subscribe();
-    let broker = tower.broker.read().await.clone();
-    let bounds = tower.bounds.read().await.clone();
-    let opening = board_event(&*tower.board.read().await, broker, bounds);
-
-    let stream = async_stream::stream! {
-        // What is true now, before anything live. Sent even when empty, so a
-        // browser can tell "nothing has published" from "not connected".
-        yield Ok(opening);
-        loop {
-            match rx.recv().await {
-                Ok(live) => yield Ok(event_for(Ok(live))),
-                // The count AND the state. Two events because they say
-                // different things: *you missed n* is worth reporting to an
-                // operator, and *here is what is true* is what fixes it.
-                // Sending only the count -- which this tower did until
-                // 2026-09-22 -- leaves the browser to recover by waiting an
-                // interval per venue.
-                Err(broadcast::error::RecvError::Lagged(missed)) => {
-                    yield Ok(event_for(Err(BroadcastStreamRecvError::Lagged(missed))));
-                    let broker = tower.broker.read().await.clone();
-                    let bounds = tower.bounds.read().await.clone();
-                    yield Ok(board_event(&*tower.board.read().await, broker, bounds));
-                }
-                Err(broadcast::error::RecvError::Closed) => break,
-            }
-        }
-    };
-    Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
-}
-
 /// Every venue's newest snapshot, as one frame.
 ///
 /// **The answer to every gap.** Connect, lag, reconnect -- all three are the
 /// same question, *what is true now*, and this is it. That is what makes this a
 /// STATE stream rather than an event stream: a message is a notification that
 /// the state moved, and the state itself is always available.
-fn board_event(
+pub(crate) fn board_event(
     board: &BTreeMap<String, Arc<Snapshot>>,
     broker: BrokerState,
     bounds: tape::Bounds,
-) -> Event {
+) -> axum::response::sse::Event {
     // **The broker's state travels with the venues.** A browser connecting
     // during an outage used to be handed an empty list and nothing else, and
     // rendered "no venue has published status yet" — false, reassuring, and
@@ -1035,10 +448,10 @@ fn board_event(
         bounds,
         venues: board.values().map(|s| (**s).clone()).collect(),
     };
-    Event::default()
+    axum::response::sse::Event::default()
         .event("board")
         .json_data(&frame)
-        .unwrap_or_else(|_| Event::default().event("board").data("{}"))
+        .unwrap_or_else(|_| axum::response::sse::Event::default().event("board").data("{}"))
 }
 
 /// One received item as the event the browser sees.
@@ -1046,470 +459,38 @@ fn board_event(
 /// Separated from the handler so the lag path can be exercised: forcing a real
 /// receiver to fall behind through an HTTP connection is awkward, and a branch
 /// that is only ever reasoned about is a branch that is not held.
-fn event_for(received: Result<Live, BroadcastStreamRecvError>) -> Event {
+pub(crate) fn event_for(
+    received: Result<Live, tokio_stream::wrappers::errors::BroadcastStreamRecvError>,
+) -> axum::response::sse::Event {
     match received {
-        Ok(Live::Status(snapshot)) => Event::default()
+        Ok(Live::Status(snapshot)) => axum::response::sse::Event::default()
             .event("status")
             .json_data(&*snapshot)
-            .unwrap_or_else(|_| Event::default().event("status").data("{}")),
+            .unwrap_or_else(|_| axum::response::sse::Event::default().event("status").data("{}")),
         // Its own event name, so a browser dispatches rather than inspects.
-        Ok(Live::Broker(state)) => Event::default()
+        Ok(Live::Broker(state)) => axum::response::sse::Event::default()
             .event("broker")
             .json_data(&state)
-            .unwrap_or_else(|_| Event::default().event("broker").data("{}")),
-        Ok(Live::Tape(moved)) => Event::default()
+            .unwrap_or_else(|_| axum::response::sse::Event::default().event("broker").data("{}")),
+        Ok(Live::Tape(moved)) => axum::response::sse::Event::default()
             .event("tape")
             .json_data(&moved)
-            .unwrap_or_else(|_| Event::default().event("tape").data("{}")),
-        Ok(Live::Archive(moved)) => Event::default()
+            .unwrap_or_else(|_| axum::response::sse::Event::default().event("tape").data("{}")),
+        Ok(Live::Archive(moved)) => axum::response::sse::Event::default()
             .event("archive")
             .json_data(&moved)
-            .unwrap_or_else(|_| Event::default().event("archive").data("{}")),
+            .unwrap_or_else(|_| axum::response::sse::Event::default().event("archive").data("{}")),
         // **A gap is an event, never an absence.** Dropping is safe only
         // because the stream is level-triggered -- the next snapshot is the
         // whole state -- and even then the browser is told how far it fell
         // rather than quietly missing them.
-        Err(BroadcastStreamRecvError::Lagged(missed)) => Event::default()
-            .event("lagged")
-            .json_data(serde_json::json!({ "missed": missed }))
-            .unwrap_or_else(|_| Event::default().event("lagged").data("{}")),
+        Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(missed)) => {
+            axum::response::sse::Event::default()
+                .event("lagged")
+                .json_data(serde_json::json!({ "missed": missed }))
+                .unwrap_or_else(|_| axum::response::sse::Event::default().event("lagged").data("{}"))
+        }
     }
-}
-
-/// The window a caller asks for, in venue micros — the clock the tape is
-/// sorted and dated by.
-#[derive(Deserialize, utoipa::IntoParams)]
-struct WindowQuery {
-    /// Start, inclusive.
-    from: i64,
-    /// End, exclusive.
-    to: i64,
-    /// The most rows to return. Defaults to `tape::DEFAULT_LIMIT`.
-    limit: Option<usize>,
-    /// One instrument, or every instrument in the window.
-    ///
-    /// Matched whole — `BTC` is not `BTCUSD`. Omitted means every, which is
-    /// what a table of the newest rows wants by default.
-    ticker: Option<String>,
-}
-
-/// One dataset, over a window, as the durable bound permits.
-///
-/// **Decimals arrive as strings.** See `tape.rs`: serialising with
-/// `arrow-json` would send them unquoted, and `JSON.parse` would round every
-/// price before anything could decline to.
-#[utoipa::path(
-    get,
-    path = "/v1/tape/{kind}",
-    params(("kind" = String, Path, description = "quotes, trades, candles, funding, marks or gaps"), WindowQuery),
-    responses(
-        (status = 200, description = "The window's rows, and the durable bound", body = tape::View),
-        (status = 400, description = "An unknown dataset, or a window that runs backwards", body = String),
-    ),
-)]
-async fn tape_view(
-    State(tower): State<Tower>,
-    UrlPath(kind): UrlPath<String>,
-    Query(window): Query<WindowQuery>,
-) -> Response {
-    let kind = match tape::kind_of(&kind) {
-        Ok(kind) => kind,
-        Err(refusal) => return (StatusCode::BAD_REQUEST, refusal.to_string()).into_response(),
-    };
-    // A listing walks the store and parquet is decoded, so this does not belong
-    // on the async executor.
-    let root = tower.tape.clone();
-    let read = tokio::task::spawn_blocking(move || {
-        tape::view(
-            &root,
-            kind,
-            window.from,
-            window.to,
-            window.limit.unwrap_or(tape::DEFAULT_LIMIT),
-            window.ticker,
-        )
-    })
-    .await;
-    match read {
-        Ok(Ok(view)) => Json(view).into_response(),
-        Ok(Err(refusal)) => (StatusCode::BAD_REQUEST, refusal.to_string()).into_response(),
-        Err(join) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("the read did not finish: {join}"),
-        )
-            .into_response(),
-    }
-}
-
-/// What the record says is missing, and why.
-///
-/// **A gap is never inferred from silence.** This reports intervals the record
-/// states are gaps; absent rows are not one, and nothing here turns them into
-/// one.
-#[utoipa::path(
-    get,
-    path = "/v1/gaps",
-    params(WindowQuery),
-    responses(
-        (status = 200, description = "Gaps in the window, by cause", body = tape::Coverage),
-        (status = 400, description = "A window that runs backwards", body = String),
-    ),
-)]
-async fn gaps(State(tower): State<Tower>, Query(window): Query<WindowQuery>) -> Response {
-    // Parquet is decoded here, so it does not belong on the async executor.
-    let root = tower.tape.clone();
-    let read =
-        tokio::task::spawn_blocking(move || tape::coverage(&root, window.from, window.to)).await;
-    match read {
-        Ok(Ok(coverage)) => Json(coverage).into_response(),
-        Ok(Err(refusal)) => (StatusCode::BAD_REQUEST, refusal.to_string()).into_response(),
-        Err(join) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("the read did not finish: {join}"),
-        )
-            .into_response(),
-    }
-}
-
-/// Every instrument the record holds, and when each was last seen.
-///
-/// **The record, not the bus.** The instruments panel read live status and
-/// nothing else until 2026-09-22, so the one surface naming the instruments
-/// was the one that could not answer without a broker — in a binary whose
-/// whole sentence is *it watches the record, not the worker*. The roadmap's
-/// exit condition for this tier asks for *"six instruments, their ages"*, and
-/// it showed zero against a tape holding all six.
-#[utoipa::path(
-    get,
-    path = "/v1/instruments",
-    responses((status = 200, description = "Every instrument the tape holds, newest first", body = tape::Instruments)),
-)]
-async fn instruments(State(tower): State<Tower>) -> Response {
-    // Parquet is decoded here, so it does not belong on the async executor.
-    let root = tower.tape.clone();
-    match tokio::task::spawn_blocking(move || tape::instruments(&root)).await {
-        Ok(found) => Json(found).into_response(),
-        Err(join) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("the read did not finish: {join}"),
-        )
-            .into_response(),
-    }
-}
-
-/// What the record says it could not parse.
-///
-/// **A failure is not a gap.** A gap is a known absence with a cause and
-/// bounds, and `/v1/gaps` reports it. A failure is a payload that ARRIVED and
-/// produced no row — the record looks complete and the rows are simply not
-/// there. The archive has written these since Tier 1 and nothing has ever
-/// read them back.
-#[utoipa::path(
-    get,
-    path = "/v1/failures",
-    responses((status = 200, description = "What the record could not parse, by error", body = failures::Failures)),
-)]
-async fn failures(State(tower): State<Tower>) -> Response {
-    // A walk and, where there is anything to read, parquet. Not the executor's.
-    let root = tower.archive.clone();
-    match tokio::task::spawn_blocking(move || failures::failures(&root)).await {
-        Ok(found) => Json(found).into_response(),
-        Err(join) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("the read did not finish: {join}"),
-        )
-            .into_response(),
-    }
-}
-
-/// How much of each day the record holds.
-///
-/// **The question nothing else answered**: *is this day usable?* That a day
-/// exists, that it wants compacting, and that some time is missing across the
-/// whole record are three different facts, and none of them is this one.
-///
-/// Every figure is in our clock. `recv_micros` is what the partitions are
-/// dated by, what a gap's bounds are written in, and what *did we have this
-/// data* means — the predecessor puts it in one line: *"recv_micros is what
-/// coverage, gaps and latency are measured in."*
-#[utoipa::path(
-    get,
-    path = "/v1/coverage",
-    responses((status = 200, description = "How much of each day the record covers, newest first", body = tape::Covered)),
-)]
-async fn coverage(State(tower): State<Tower>) -> Response {
-    let root = tower.tape.clone();
-    match tokio::task::spawn_blocking(move || tape::covered_days(&root)).await {
-        Ok(found) => Json(found).into_response(),
-        Err(join) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("the read did not finish: {join}"),
-        )
-            .into_response(),
-    }
-}
-
-/// What a caller may narrow the hourly counts by.
-#[derive(Deserialize, utoipa::IntoParams)]
-struct RatesQuery {
-    /// The most hour-buckets to return, newest first. Defaults to
-    /// [`tape::DEFAULT_HOURS`].
-    hours: Option<usize>,
-}
-
-/// How many rows the record holds, by hour.
-///
-/// **The failure nothing else here sees.** A socket that stays open and
-/// delivers a trickle records no gap, leaves coverage at its full window, and
-/// keeps every instrument's last-seen current — *"the TCP connection remains
-/// nominally established, nothing arrives."* The partial case is worse than
-/// the total one, because the total one is a gap.
-///
-/// No baseline, no threshold, no flag. What a normal hour holds for a venue is
-/// the operator's knowledge, and an hour beside its neighbours is a shape they
-/// can read.
-#[utoipa::path(
-    get,
-    path = "/v1/rates",
-    params(RatesQuery),
-    responses((status = 200, description = "Rows per venue, dataset and hour, newest first", body = tape::Rates)),
-)]
-async fn rates(State(tower): State<Tower>, Query(query): Query<RatesQuery>) -> Response {
-    let root = tower.tape.clone();
-    let limit = query.hours.unwrap_or(tape::DEFAULT_HOURS);
-    match tokio::task::spawn_blocking(move || tape::rates(&root, limit)).await {
-        Ok(found) => Json(found).into_response(),
-        Err(join) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("the read did not finish: {join}"),
-        )
-            .into_response(),
-    }
-}
-
-/// Every venue's newest prices, read from the archive's tail.
-///
-/// Not the tape, which may be days behind, and not the bus, which the tower may not read market data from.
-#[utoipa::path(
-    get,
-    path = "/v1/latest",
-    responses((status = 200, description = "The newest quote and trade per instrument, from the archive", body = latest::Latest)),
-)]
-async fn latest_prices(State(tower): State<Tower>) -> Response {
-    let frontier = tower.frontiers.read().await.archive.clone();
-    let (archive, normalisers, shared) = (
-        tower.archive.clone(),
-        Arc::clone(&tower.normalisers),
-        Arc::clone(&tower.latest),
-    );
-    match tokio::task::spawn_blocking(move || {
-        shared.get(|| latest::latest(&archive, &frontier, &normalisers))
-    })
-    .await
-    {
-        Ok(found) => Json((*found).clone()).into_response(),
-        Err(join) => unfinished(join),
-    }
-}
-
-/// The record over time: held runs, recorded gaps, backfills, and what only the archive holds.
-#[utoipa::path(
-    get,
-    path = "/v1/timeline",
-    responses(
-        (status = 200, description = "Each venue and dataset as intervals", body = shape::Timeline),
-        (status = 400, description = "The tape could not be read", body = String),
-    ),
-)]
-async fn timeline(State(tower): State<Tower>) -> Response {
-    let (tape, archive) = (tower.tape.clone(), tower.archive.clone());
-    match tokio::task::spawn_blocking(move || shape::timeline(&tape, &archive)).await {
-        Ok(Ok(found)) => Json(found).into_response(),
-        Ok(Err(refusal)) => (StatusCode::BAD_REQUEST, refusal.to_string()).into_response(),
-        Err(join) => unfinished(join),
-    }
-}
-
-/// Which candles to read.
-#[derive(Deserialize, utoipa::IntoParams)]
-struct CandleQuery {
-    /// The venue.
-    venue: String,
-    /// The instrument.
-    ticker: String,
-    /// 1m, 5m, 15m or 1h.
-    interval: String,
-    /// Start, venue micros, inclusive. Defaults to the beginning.
-    from: Option<i64>,
-    /// End, venue micros, exclusive. Defaults to the end.
-    to: Option<i64>,
-}
-
-/// One instrument's candles, folded and resampled on the server.
-#[utoipa::path(
-    get,
-    path = "/v1/candles",
-    params(CandleQuery),
-    responses(
-        (status = 200, description = "Bars, oldest first, each marked if a backfill sent it", body = shape::Candles),
-        (status = 400, description = "An unknown interval, or a window that runs backwards", body = String),
-    ),
-)]
-async fn candles(State(tower): State<Tower>, Query(query): Query<CandleQuery>) -> Response {
-    let Some(interval) = shape::Interval::parse(&query.interval) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            format!(
-                "{} is not an interval; ask for one of {}",
-                query.interval,
-                shape::Interval::NAMES
-            ),
-        )
-            .into_response();
-    };
-    let tape = tower.tape.clone();
-    match tokio::task::spawn_blocking(move || {
-        shape::candles(
-            &tape,
-            &query.venue,
-            &query.ticker,
-            interval,
-            &query.interval,
-            query.from.unwrap_or(i64::MIN + 1),
-            query.to.unwrap_or(i64::MAX),
-        )
-    })
-    .await
-    {
-        Ok(Ok(found)) => Json(found).into_response(),
-        Ok(Err(refusal)) => (StatusCode::BAD_REQUEST, refusal.to_string()).into_response(),
-        Err(join) => unfinished(join),
-    }
-}
-
-/// Every venue and dataset the tape holds, as the Overview's grid.
-#[utoipa::path(
-    get,
-    path = "/v1/board",
-    responses(
-        (status = 200, description = "Tape rows, archive segments today, coverage and gap rows per venue and dataset", body = shape::Datasets),
-        (status = 400, description = "The tape could not be read", body = String),
-    ),
-)]
-async fn board(State(tower): State<Tower>) -> Response {
-    let (tape, archive, today) = (tower.tape.clone(), tower.archive.clone(), today_utc());
-    match tokio::task::spawn_blocking(move || shape::board(&tape, &archive, &today)).await {
-        Ok(Ok(found)) => Json(found).into_response(),
-        Ok(Err(refusal)) => (StatusCode::BAD_REQUEST, refusal.to_string()).into_response(),
-        Err(join) => unfinished(join),
-    }
-}
-
-/// The ledger's fold report for a venue, passed through as the ledger wrote it.
-///
-/// Accounts by alias only: the tower never reads the ledger's root, holds no
-/// address and no key. An absent report is an empty state, not an error.
-#[utoipa::path(
-    get,
-    path = "/v1/portfolio",
-    params(portfolio::PortfolioQuery),
-    responses(
-        (status = 200, description = "The fold report and its age, or why there is none", body = portfolio::Portfolio),
-    ),
-)]
-async fn portfolio_report(
-    State(tower): State<Tower>,
-    Query(query): Query<portfolio::PortfolioQuery>,
-) -> Response {
-    let dir = tower.reports.clone();
-    match tokio::task::spawn_blocking(move || portfolio::read_report(&dir, &query.venue)).await {
-        Ok(found) => Json(found).into_response(),
-        Err(join) => unfinished(join),
-    }
-}
-
-/// Volatility, correlation and beta derived from the tape on request, each
-/// with its n and backfilled share. The floor and z have no defaults.
-#[utoipa::path(
-    get,
-    path = "/v1/statistics",
-    params(portfolio::StatisticsQuery),
-    responses(
-        (status = 200, description = "The derivation, with the tape bound it read to", body = portfolio::Derived),
-        (status = 400, description = "A missing floor or z, an unknown horizon, or a window that runs backwards", body = String),
-    ),
-)]
-async fn statistics(
-    State(tower): State<Tower>,
-    Query(query): Query<portfolio::StatisticsQuery>,
-) -> Response {
-    let tape = tower.tape.clone();
-    match tokio::task::spawn_blocking(move || portfolio::derive(&tape, &query)).await {
-        Ok(Ok(found)) => Json(found).into_response(),
-        Ok(Err(refusal)) => (StatusCode::BAD_REQUEST, refusal).into_response(),
-        Err(join) => unfinished(join),
-    }
-}
-
-/// Each horizon's newest stored figures for a signal, and whether each is
-/// stale by the tower's clock. Nothing is computed from them.
-#[utoipa::path(
-    get,
-    path = "/v1/signals",
-    params(signals::SignalsQuery),
-    responses(
-        (status = 200, description = "Every horizon's newest figures, as stored; an empty list when none is", body = signals::Signals),
-    ),
-)]
-async fn stored_signals(
-    State(tower): State<Tower>,
-    Query(query): Query<signals::SignalsQuery>,
-) -> Response {
-    let tape = tower.tape.clone();
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_micros() as i64)
-        .unwrap_or_default();
-    match tokio::task::spawn_blocking(move || signals::latest(&tape, &query.signal, now)).await {
-        Ok(found) => Json(found).into_response(),
-        Err(join) => unfinished(join),
-    }
-}
-
-/// One stored signal's history for one pair and horizon: per asof, its
-/// latest computation, as stored. At most 90 days.
-#[utoipa::path(
-    get,
-    path = "/v1/signal-history",
-    params(signals::HistoryQuery),
-    responses(
-        (status = 200, description = "One point per asof, oldest first, a value or why there is none", body = signals::History),
-        (status = 400, description = "A window outside 1 to 90 days", body = String),
-    ),
-)]
-async fn signal_history(
-    State(tower): State<Tower>,
-    Query(query): Query<signals::HistoryQuery>,
-) -> Response {
-    let tape = tower.tape.clone();
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_micros() as i64)
-        .unwrap_or_default();
-    match tokio::task::spawn_blocking(move || signals::history(&tape, &query, now)).await {
-        Ok(Ok(found)) => Json(found).into_response(),
-        Ok(Err(refusal)) => (StatusCode::BAD_REQUEST, refusal).into_response(),
-        Err(join) => unfinished(join),
-    }
-}
-
-/// A read that panicked or was cancelled.
-fn unfinished(join: tokio::task::JoinError) -> Response {
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        format!("the read did not finish: {join}"),
-    )
-        .into_response()
 }
 
 /// The document, described once by the routes that answer it.
@@ -1537,26 +518,26 @@ struct Contract;
 ///
 /// **One declaration.** `OpenApiRouter` takes each path from the route itself,
 /// so there is no second list to fall out of step with this one.
-fn router(tower: Tower) -> (Router, utoipa::openapi::OpenApi) {
+fn router(tower: Tower) -> (axum::Router, utoipa::openapi::OpenApi) {
     OpenApiRouter::with_openapi(Contract::openapi())
-        .routes(routes!(about))
-        .routes(routes!(partitions))
-        .routes(routes!(overdue))
-        .routes(routes!(status))
-        .routes(routes!(tape_view))
-        .routes(routes!(gaps))
-        .routes(routes!(instruments))
-        .routes(routes!(failures))
-        .routes(routes!(coverage))
-        .routes(routes!(rates))
-        .routes(routes!(latest_prices))
-        .routes(routes!(timeline))
-        .routes(routes!(candles))
-        .routes(routes!(board))
-        .routes(routes!(portfolio_report))
-        .routes(routes!(statistics))
-        .routes(routes!(stored_signals))
-        .routes(routes!(signal_history))
+        .routes(routes!(routes::about::about))
+        .routes(routes!(routes::about::partitions))
+        .routes(routes!(routes::about::overdue))
+        .routes(routes!(routes::status::status))
+        .routes(routes!(routes::tape::tape_view))
+        .routes(routes!(routes::tape::gaps))
+        .routes(routes!(routes::tape::instruments))
+        .routes(routes!(routes::failures::failures))
+        .routes(routes!(routes::tape::coverage))
+        .routes(routes!(routes::tape::rates))
+        .routes(routes!(routes::status::latest_prices))
+        .routes(routes!(routes::shape::timeline))
+        .routes(routes!(routes::shape::candles))
+        .routes(routes!(routes::shape::board))
+        .routes(routes!(routes::portfolio::portfolio_report))
+        .routes(routes!(routes::portfolio::statistics))
+        .routes(routes!(routes::signals::stored_signals))
+        .routes(routes!(routes::signals::signal_history))
         .with_state(tower)
         .split_for_parts()
 }
@@ -1659,9 +640,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Loopback by default, like everything else here: reaching another machine
     // is a deployment decision, made by setting this.
     let broker = std::env::var("GALATA_BROKER").unwrap_or_else(|_| "127.0.0.1:4222".to_owned());
-    subscribe_to_status(broker, status.clone(), board, broker_state);
+    background::subscribe_to_status(broker, status.clone(), board, broker_state);
     // The record's own liveness, which does not depend on a bus at all.
-    watch_the_record(
+    background::watch_the_record(
         tower.tape.clone(),
         tower.archive.clone(),
         status,
@@ -1688,8 +669,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // Only the tests construct one now: the handler is a generator, and the
-    // error type is what event_for matches on.
+    use crate::background;
     use tokio_stream::StreamExt as _;
     use tokio_stream::wrappers::BroadcastStream;
 
@@ -1840,25 +820,25 @@ mod tests {
     /// first and rarely later, and thirty seconds is the ceiling.
     #[test]
     fn the_wait_climbs_and_then_stops_climbing() {
-        let mut wait = FIRST_RETRY;
+        let mut wait = background::FIRST_RETRY;
         let mut seen = vec![wait];
         for _ in 0..10 {
-            wait = (wait * 2).min(LONGEST_RETRY);
+            wait = (wait * 2).min(background::LONGEST_RETRY);
             seen.push(wait);
         }
         assert_eq!(
             seen[0],
-            Duration::from_secs(1),
+            std::time::Duration::from_secs(1),
             "a boot race costs a second"
         );
-        assert_eq!(seen[1], Duration::from_secs(2), "{seen:?}");
+        assert_eq!(seen[1], std::time::Duration::from_secs(2), "{seen:?}");
         assert_eq!(
             *seen.last().expect("ten doublings"),
-            LONGEST_RETRY,
+            background::LONGEST_RETRY,
             "and it settles at the ceiling rather than growing without bound: {seen:?}"
         );
         assert!(
-            seen.iter().all(|w| *w <= LONGEST_RETRY),
+            seen.iter().all(|w| *w <= background::LONGEST_RETRY),
             "nothing above the ceiling: {seen:?}"
         );
     }
@@ -1867,12 +847,12 @@ mod tests {
     /// argument would pass every other test here; this is the one that fails.
     #[test]
     fn the_wait_is_jittered_within_a_quarter_either_side() {
-        let wait = Duration::from_secs(8);
+        let wait = std::time::Duration::from_secs(8);
         let mut seen = std::collections::BTreeSet::new();
         for _ in 0..200 {
-            let got = jittered(wait);
+            let got = background::jittered(wait);
             assert!(
-                got >= Duration::from_secs(6) && got <= Duration::from_secs(10),
+                got >= std::time::Duration::from_secs(6) && got <= std::time::Duration::from_secs(10),
                 "a quarter either side of eight seconds, got {got:?}"
             );
             seen.insert(got);
@@ -1888,8 +868,8 @@ mod tests {
     /// A sub-millisecond wait has no room for a band; it must not divide by zero.
     #[test]
     fn a_wait_too_small_to_jitter_is_still_a_wait() {
-        let got = jittered(Duration::from_micros(500));
-        assert!(got <= Duration::from_millis(1), "{got:?}");
+        let got = background::jittered(std::time::Duration::from_micros(500));
+        assert!(got <= std::time::Duration::from_millis(1), "{got:?}");
     }
 
     /// `(kind, venue, position)` triples as the watch sees them.
@@ -1912,7 +892,7 @@ mod tests {
             ("candles", "hyperliquid", 12),
         ]);
         assert!(
-            moves(&seen, &seen).is_empty(),
+            background::moves(&seen, &seen).is_empty(),
             "an unchanged bound must not wake every open screen"
         );
     }
@@ -1921,7 +901,7 @@ mod tests {
     /// drawn it.
     #[test]
     fn a_kind_that_appears_is_a_move() {
-        let moved = moves(
+        let moved = background::moves(
             &tape::Bounds::new(),
             &bounds(&[("quotes", "hyperliquid", 1)]),
         );
@@ -1934,7 +914,7 @@ mod tests {
     /// Only the kind that moved, so a quotes write does not redraw candles.
     #[test]
     fn only_the_kind_that_moved_is_reported() {
-        let moved = moves(
+        let moved = background::moves(
             &bounds(&[("quotes", "hyperliquid", 10), ("candles", "hyperliquid", 5)]),
             &bounds(&[("quotes", "hyperliquid", 11), ("candles", "hyperliquid", 5)]),
         );
@@ -1946,7 +926,7 @@ mod tests {
     /// their positions are in two unrelated numberings.
     #[test]
     fn two_venues_moves_are_reported_separately() {
-        let moved = moves(
+        let moved = background::moves(
             &bounds(&[
                 ("quotes", "hyperliquid", 10),
                 ("quotes", "rh-crypto", 9_000_000),
@@ -1965,7 +945,7 @@ mod tests {
     /// tower; that is a log line, not a redraw of every chart.
     #[test]
     fn a_bound_that_went_backwards_is_not_a_move() {
-        let moved = moves(
+        let moved = background::moves(
             &bounds(&[("quotes", "hyperliquid", 100)]),
             &bounds(&[("quotes", "hyperliquid", 40)]),
         );
@@ -1980,7 +960,7 @@ mod tests {
     /// the venue board holds.
     #[test]
     fn a_kind_that_disappears_is_not_reported() {
-        let moved = moves(
+        let moved = background::moves(
             &bounds(&[("quotes", "hyperliquid", 10)]),
             &tape::Bounds::new(),
         );
@@ -2046,7 +1026,7 @@ mod tests {
             today,
             galata_datawatch::date_of(
                 SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
+                    .duration_since(SystemTime::UNIX_EPOCH)
                     .map(|d| i64::try_from(d.as_micros()).unwrap_or(i64::MAX))
                     .unwrap_or(0)
             ),
@@ -2081,7 +1061,7 @@ mod tests {
     #[test]
     fn the_default_threshold_is_what_compaction_leaves() {
         assert_eq!(
-            COMPACTED_TO, 1,
+            routes::about::COMPACTED_TO, 1,
             "compaction leaves one segment, and `overdue_closed` keeps count > max"
         );
     }
@@ -2105,7 +1085,7 @@ mod tests {
             return;
         };
         let today = today_utc();
-        let listed = galata_segments::overdue_closed(&root, &today, COMPACTED_TO);
+        let listed = galata_segments::overdue_closed(&root, &today, routes::about::COMPACTED_TO);
         for (path, segments) in &listed {
             assert!(
                 !path
@@ -2122,7 +1102,7 @@ mod tests {
         // assertion above while proving nothing.
         for (path, segments) in &listed {
             assert!(
-                *segments > COMPACTED_TO,
+                *segments > routes::about::COMPACTED_TO,
                 "{} has {segments}",
                 path.display()
             );
@@ -2237,7 +1217,7 @@ mod tests {
     async fn a_broker_change_is_both_recorded_and_announced() {
         let broker: Arc<RwLock<BrokerState>> = Arc::default();
         let (tx, mut rx) = broadcast::channel::<Live>(4);
-        say(
+        background::say(
             &broker,
             &tx,
             BrokerState {
