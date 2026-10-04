@@ -116,11 +116,7 @@ pub(crate) type DayWindows = BTreeMap<(String, String, String), (i64, i64, usize
 
 /// One batch's arrivals folded into each day's window — the per-batch half of
 /// [`covered_days`], shared with the board's single pass over the tape.
-pub(crate) fn day_window(
-    kind: Kind,
-    batch: &arrow::array::RecordBatch,
-    windows: &mut DayWindows,
-) {
+pub(crate) fn day_window(kind: Kind, batch: &arrow::array::RecordBatch, windows: &mut DayWindows) {
     let venue = crate::column!(batch, "venue", StringArray, "Utf8");
     let recv = crate::column!(batch, "recv_micros", Int64Array, "Int64");
     let (Ok(venue), Ok(recv)) = (venue, recv) else {
@@ -591,10 +587,7 @@ mod tests {
     /// cannot make the cut and their partitions are not read.
     #[test]
     fn the_cap_stops_the_walk_at_the_newest_dates() {
-        let dir = std::env::temp_dir().join(format!(
-            "galata-tower-rates-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("galata-tower-rates-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         write_arrivals(&dir, "1970-01-01", 1, &[HOUR_MICROS, HOUR_MICROS + 1]);

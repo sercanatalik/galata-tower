@@ -367,7 +367,10 @@ pub fn timeline(tape_root: &Path, archive_root: &Path) -> Result<Timeline, TapeE
                 if let Some(at) = at.filter(|a| !a.is_null(i))
                     && r - at.value(i) > BACKFILL_AFTER_MICROS
                 {
-                    late_here.entry(venue.value(i)).or_default().push(at.value(i));
+                    late_here
+                        .entry(venue.value(i))
+                        .or_default()
+                        .push(at.value(i));
                 }
             }
             for (venue, arrivals) in held_here {
@@ -859,17 +862,23 @@ mod tests {
     /// the whole history and now decodes only what appeared since.
     #[test]
     fn the_tape_frontier_follows_segments_through_the_cache() {
-        let dir = std::env::temp_dir().join(format!(
-            "galata-tower-frontier-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("galata-tower-frontier-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
         let cache = FrontierCache::default();
-        assert!(tape_frontier(&dir, &cache).is_empty(), "an empty tape has no frontier");
+        assert!(
+            tape_frontier(&dir, &cache).is_empty(),
+            "an empty tape has no frontier"
+        );
 
-        write_quotes(&dir, "2026-09-22", 1, &[("hyperliquid", 1_000), ("rh-crypto", 2_000)]);
+        write_quotes(
+            &dir,
+            "2026-09-22",
+            1,
+            &[("hyperliquid", 1_000), ("rh-crypto", 2_000)],
+        );
         let first = tape_frontier(&dir, &cache);
         assert_eq!(first.get("hyperliquid"), Some(&1_000));
         assert_eq!(first.get("rh-crypto"), Some(&2_000));

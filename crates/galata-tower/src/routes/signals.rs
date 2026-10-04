@@ -4,7 +4,7 @@ use axum::extract::{Query, State};
 use axum::response::Response;
 
 use crate::routes::{blocking_json, blocking_json_infallible};
-use crate::{signals, Tower};
+use crate::{Tower, signals};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Each horizon's newest stored figures for a signal, and whether each is

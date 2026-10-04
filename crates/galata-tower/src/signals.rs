@@ -295,7 +295,9 @@ pub fn history(tape: &Path, query: &HistoryQuery, now_micros: i64) -> Result<His
                         continue;
                     }
                     let pair = match &query.ticker_j {
-                        Some(t) => !cols.ticker_j.is_null(i) && cols.ticker_j.value(i) == t.as_str(),
+                        Some(t) => {
+                            !cols.ticker_j.is_null(i) && cols.ticker_j.value(i) == t.as_str()
+                        }
                         None => cols.ticker_j.is_null(i),
                     };
                     if !pair {

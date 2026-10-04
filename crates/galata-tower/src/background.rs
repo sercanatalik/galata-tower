@@ -12,7 +12,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use galata_broker::{BrokerIdentity, NatsSubscriber};
 use tokio::sync::{RwLock, broadcast};
 
-use crate::{BrokerState, Live, Snapshot, TapeMoved, Frontiers, tape, shape};
+use crate::{BrokerState, Frontiers, Live, Snapshot, TapeMoved, shape, tape};
 
 /// One second, then two, then four, to thirty.
 ///

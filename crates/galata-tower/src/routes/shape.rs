@@ -7,7 +7,7 @@ use serde::Deserialize;
 use utoipa::IntoParams;
 
 use crate::routes::blocking_json;
-use crate::{shape, Tower};
+use crate::{Tower, shape};
 
 /// Which candles to read.
 #[derive(Deserialize, IntoParams)]
@@ -48,7 +48,10 @@ pub(crate) async fn timeline(State(tower): State<Tower>) -> Response {
         (status = 400, description = "An unknown interval, or a window that runs backwards", body = String),
     ),
 )]
-pub(crate) async fn candles(State(tower): State<Tower>, Query(query): Query<CandleQuery>) -> Response {
+pub(crate) async fn candles(
+    State(tower): State<Tower>,
+    Query(query): Query<CandleQuery>,
+) -> Response {
     let Some(interval) = shape::Interval::parse(&query.interval) else {
         return (
             StatusCode::BAD_REQUEST,
@@ -85,6 +88,10 @@ pub(crate) async fn candles(State(tower): State<Tower>, Query(query): Query<Cand
     ),
 )]
 pub(crate) async fn board(State(tower): State<Tower>) -> Response {
-    let (tape, archive, today) = (tower.tape.clone(), tower.archive.clone(), crate::today_utc());
+    let (tape, archive, today) = (
+        tower.tape.clone(),
+        tower.archive.clone(),
+        crate::today_utc(),
+    );
     blocking_json(move || shape::board(&tape, &archive, &today)).await
 }

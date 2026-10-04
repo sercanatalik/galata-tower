@@ -1,14 +1,14 @@
 //! About, partitions and overdue routes.
 
-use axum::extract::{Query, State};
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
-use axum::Json;
-use serde::Deserialize;
-use utoipa::IntoParams;
 use crate::layout;
 use crate::routes::unfinished;
 use crate::{Partition, Root, Tower};
+use axum::Json;
+use axum::extract::{Query, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use serde::Deserialize;
+use utoipa::IntoParams;
 
 /// What a caller may narrow the overdue listing by.
 #[derive(Deserialize, IntoParams)]

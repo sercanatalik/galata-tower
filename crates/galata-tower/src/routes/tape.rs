@@ -6,9 +6,9 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use utoipa::IntoParams;
 
+use crate::Tower;
 use crate::routes::{blocking_json, blocking_json_infallible};
 use crate::tape;
-use crate::Tower;
 
 /// The window a caller asks for, in venue micros — the clock the tape is
 /// sorted and dated by.
@@ -78,7 +78,10 @@ pub(crate) async fn tape_view(
         (status = 400, description = "A window that runs backwards", body = String),
     ),
 )]
-pub(crate) async fn gaps(State(tower): State<Tower>, Query(window): Query<WindowQuery>) -> Response {
+pub(crate) async fn gaps(
+    State(tower): State<Tower>,
+    Query(window): Query<WindowQuery>,
+) -> Response {
     let root = tower.tape.clone();
     blocking_json(move || tape::coverage(&root, window.from, window.to)).await
 }

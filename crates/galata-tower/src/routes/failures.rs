@@ -4,7 +4,7 @@ use axum::extract::State;
 use axum::response::Response;
 
 use crate::routes::blocking_json_infallible;
-use crate::{failures, Tower};
+use crate::{Tower, failures};
 
 /// What the record says it could not parse.
 ///

@@ -461,7 +461,11 @@ pub(crate) fn board_event(
     axum::response::sse::Event::default()
         .event("board")
         .json_data(&frame)
-        .unwrap_or_else(|_| axum::response::sse::Event::default().event("board").data("{}"))
+        .unwrap_or_else(|_| {
+            axum::response::sse::Event::default()
+                .event("board")
+                .data("{}")
+        })
 }
 
 /// One received item as the event the browser sees.
@@ -476,20 +480,36 @@ pub(crate) fn event_for(
         Ok(Live::Status(snapshot)) => axum::response::sse::Event::default()
             .event("status")
             .json_data(&*snapshot)
-            .unwrap_or_else(|_| axum::response::sse::Event::default().event("status").data("{}")),
+            .unwrap_or_else(|_| {
+                axum::response::sse::Event::default()
+                    .event("status")
+                    .data("{}")
+            }),
         // Its own event name, so a browser dispatches rather than inspects.
         Ok(Live::Broker(state)) => axum::response::sse::Event::default()
             .event("broker")
             .json_data(&state)
-            .unwrap_or_else(|_| axum::response::sse::Event::default().event("broker").data("{}")),
+            .unwrap_or_else(|_| {
+                axum::response::sse::Event::default()
+                    .event("broker")
+                    .data("{}")
+            }),
         Ok(Live::Tape(moved)) => axum::response::sse::Event::default()
             .event("tape")
             .json_data(&moved)
-            .unwrap_or_else(|_| axum::response::sse::Event::default().event("tape").data("{}")),
+            .unwrap_or_else(|_| {
+                axum::response::sse::Event::default()
+                    .event("tape")
+                    .data("{}")
+            }),
         Ok(Live::Archive(moved)) => axum::response::sse::Event::default()
             .event("archive")
             .json_data(&moved)
-            .unwrap_or_else(|_| axum::response::sse::Event::default().event("archive").data("{}")),
+            .unwrap_or_else(|_| {
+                axum::response::sse::Event::default()
+                    .event("archive")
+                    .data("{}")
+            }),
         // **A gap is an event, never an absence.** Dropping is safe only
         // because the stream is level-triggered -- the next snapshot is the
         // whole state -- and even then the browser is told how far it fell
@@ -498,7 +518,11 @@ pub(crate) fn event_for(
             axum::response::sse::Event::default()
                 .event("lagged")
                 .json_data(serde_json::json!({ "missed": missed }))
-                .unwrap_or_else(|_| axum::response::sse::Event::default().event("lagged").data("{}"))
+                .unwrap_or_else(|_| {
+                    axum::response::sse::Event::default()
+                        .event("lagged")
+                        .data("{}")
+                })
         }
     }
 }
@@ -862,7 +886,8 @@ mod tests {
         for _ in 0..200 {
             let got = background::jittered(wait);
             assert!(
-                got >= std::time::Duration::from_secs(6) && got <= std::time::Duration::from_secs(10),
+                got >= std::time::Duration::from_secs(6)
+                    && got <= std::time::Duration::from_secs(10),
                 "a quarter either side of eight seconds, got {got:?}"
             );
             seen.insert(got);
@@ -1071,7 +1096,8 @@ mod tests {
     #[test]
     fn the_default_threshold_is_what_compaction_leaves() {
         assert_eq!(
-            routes::about::COMPACTED_TO, 1,
+            routes::about::COMPACTED_TO,
+            1,
             "compaction leaves one segment, and `overdue_closed` keeps count > max"
         );
     }

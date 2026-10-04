@@ -1,12 +1,12 @@
 //! Status SSE and latest prices routes.
 
 use axum::extract::State;
-use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::Response;
+use axum::response::sse::{Event, KeepAlive, Sse};
 use tokio_stream::Stream;
 
 use crate::routes::blocking_json_infallible;
-use crate::{board_event, event_for, Tower};
+use crate::{Tower, board_event, event_for};
 use std::time::Duration;
 
 /// Every venue's status, as it arrives.

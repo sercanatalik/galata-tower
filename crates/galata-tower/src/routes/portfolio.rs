@@ -4,7 +4,7 @@ use axum::extract::{Query, State};
 use axum::response::Response;
 
 use crate::routes::{blocking_json, blocking_json_infallible};
-use crate::{portfolio, Tower};
+use crate::{Tower, portfolio};
 
 /// The ledger's fold report for a venue, passed through as the ledger wrote it.
 ///
