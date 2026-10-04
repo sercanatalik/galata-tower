@@ -34,8 +34,10 @@ export interface LiveState {
   archive: Readonly<Record<string, number>>
   /** Our wall clock when any archive frontier last moved. */
   archiveAt: number | null
-  /** Bumped by every event that means held tape figures may be stale. One value, so guard and effect cannot disagree. */
+  /** Bumped when EVERYTHING held may be stale: a reconnect, which cannot know what moved while it was away. */
   resyncs: number
+  /** Bumped per tape move. The moves themselves wait in `queued`, so the refetch can be scoped to what moved. */
+  moved: number
   /** Times the stream dropped. */
   drops: number
   /** Snapshots the server told us we missed. */
@@ -54,6 +56,7 @@ let state: LiveState = {
   archive: {},
   archiveAt: null,
   resyncs: 0,
+  moved: 0,
   drops: 0,
   missed: 0,
   venues: new Map(),
@@ -163,9 +166,11 @@ function open() {
   })
 
   source.addEventListener('tape', (event) => {
+    const moved = read<TapeMoved>(event)
+    queued.push(moved)
     set({
-      ...afterTapeMoved(state, read<TapeMoved>(event), Date.now()),
-      resyncs: state.resyncs + (isAReasonToResync('advanced', opened) ? 1 : 0),
+      ...afterTapeMoved(state, moved, Date.now()),
+      moved: state.moved + 1,
       connected: true,
     })
   })
@@ -281,14 +286,40 @@ export function useRecordAdvances(kind: string): number | null {
   return at === undefined ? null : sinceArrival(at)
 }
 
-/** Mounted once: refetch everything derived from the tape whenever it may be stale. */
+/** Tape moves waiting to be turned into refetches, drained by the effect that spends them. */
+let queued: TapeMoved[] = []
+
+/**
+ * Mounted once: refetch what a change to the record made stale — and only that.
+ *
+ * The tower sends `TapeMoved` per kind and venue precisely so "a browser that
+ * does not draw this kind should not pay to receive it"; invalidating every
+ * query on any move threw that away, and a quotes-only write made every open
+ * browser re-run every whole-tape read once a second. A reconnect is the one
+ * event that cannot say what moved, so it alone refetches everything.
+ */
 export function useFollowTheRecord(): void {
   const live = useLiveStatus()
   const client = useQueryClient()
   useEffect(() => {
     if (live.resyncs === 0) return
+    // Everything is being refetched; the queued moves have nothing left to add.
+    queued = []
     client.invalidateQueries({ predicate: (q) => !isLatest(q.queryKey) })
   }, [live.resyncs, client])
+  useEffect(() => {
+    if (queued.length === 0) return
+    const moves = queued
+    queued = []
+    client.invalidateQueries({ predicate: (q) => moves.some((m) => touchedBy(q.queryKey, m)) })
+    // The stores no TapeMoved names still ride the record's movement, throttled:
+    // their writers (the flow's signals, the ledger's fold) land figures minutes
+    // apart, so a minute of staleness is invisible and 19 per-second refetches are not.
+    if (Date.now() - lastUnannounced >= UNANNOUNCED_EVERY_MS) {
+      lastUnannounced = Date.now()
+      client.invalidateQueries({ predicate: (q) => isUnannounced(q.queryKey) })
+    }
+  }, [live.moved, client])
 }
 
 /** Mounted once: refetch the latest prices when the archive moves, at most every two seconds. */
@@ -311,4 +342,56 @@ let pending: ReturnType<typeof setTimeout> | null = null
 
 function isLatest(key: readonly unknown[]): boolean {
   return key[1] === '/v1/latest'
+}
+
+/** Routes that fold every kind of the record, stale after any move at all. */
+const WHOLE_RECORD = new Set([
+  '/v1/about',
+  '/v1/board',
+  '/v1/timeline',
+  '/v1/instruments',
+  '/v1/rates',
+  '/v1/coverage',
+  '/v1/partitions',
+  '/v1/failures',
+])
+
+/** Stores written beside the tape that no TapeMoved names: the flow's signals, the ledger's fold. */
+const UNANNOUNCED = new Set(['/v1/signals', '/v1/signal-history', '/v1/portfolio'])
+
+const UNANNOUNCED_EVERY_MS = 60_000
+let lastUnannounced = Date.now()
+
+function isUnannounced(key: readonly unknown[]): boolean {
+  return typeof key[1] === 'string' && UNANNOUNCED.has(key[1])
+}
+
+/** The params a query was asked with, as openapi-react-query keys them. */
+type QueryInit = {
+  params?: { path?: Record<string, unknown>; query?: Record<string, unknown> }
+}
+
+/**
+ * Does this move make this query's answer stale?
+ *
+ * The map is of what each route READS, not what it is named: candles feed
+ * `/v1/statistics` as well as `/v1/candles`, and both are per venue, so a
+ * venue's candle write leaves the other venues' charts alone.
+ */
+export function touchedBy(key: readonly unknown[], moved: Pick<TapeMoved, 'kind' | 'venue'>): boolean {
+  const path = key[1]
+  if (typeof path !== 'string') return false
+  if (WHOLE_RECORD.has(path)) return true
+  const init = key[2] as QueryInit | undefined
+  switch (path) {
+    case '/v1/tape/{kind}':
+      return init?.params?.path?.kind === moved.kind
+    case '/v1/candles':
+    case '/v1/statistics':
+      return moved.kind === 'candles' && init?.params?.query?.venue === moved.venue
+    case '/v1/gaps':
+      return moved.kind === 'gaps'
+    default:
+      return false
+  }
 }

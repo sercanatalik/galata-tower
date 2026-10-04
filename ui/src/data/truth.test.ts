@@ -15,6 +15,7 @@ function live(over: Partial<LiveState>): LiveState {
     archive: {},
     archiveAt: null,
     resyncs: 0,
+    moved: 0,
     drops: 0,
     missed: 0,
     venues: new Map(),
