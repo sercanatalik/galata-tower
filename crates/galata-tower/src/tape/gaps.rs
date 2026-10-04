@@ -149,22 +149,26 @@ pub fn coverage(root: &Path, from: i64, to: i64) -> Result<Coverage, TapeError> 
     let scopes = [scope.as_str()];
 
     // A tape that has written no gaps is not an unreadable store, and it is
-    // not an error either: nothing missing is the good answer.
-    if !galata_datawatch::tape::reader::unwritten(root, &scopes).is_empty() {
-        return Ok(Coverage {
-            from,
-            to,
-            rows: 0,
-            bound: BTreeMap::new(),
-            causes: Vec::new(),
-        });
-    }
-
-    let reader = galata_datawatch::tape::reader::Reader::open(root, &scopes).map_err(|error| {
-        TapeError::Unreadable {
-            detail: error.to_string(),
+    // not an error either: nothing missing is the good answer. The reader
+    // refuses an unwritten scope with its own name for it, so the refusal IS
+    // that answer — asking `unwritten` first only walked the kind twice.
+    let reader = match galata_datawatch::tape::reader::Reader::open(root, &scopes) {
+        Ok(reader) => reader,
+        Err(galata_datawatch::tape::reader::ReadError::NoFrontier { .. }) => {
+            return Ok(Coverage {
+                from,
+                to,
+                rows: 0,
+                bound: BTreeMap::new(),
+                causes: Vec::new(),
+            });
         }
-    })?;
+        Err(error) => {
+            return Err(TapeError::Unreadable {
+                detail: error.to_string(),
+            });
+        }
+    };
     let batches = reader
         .view(galata_datawatch::tape::reader::Window {
             kind,
@@ -232,9 +236,9 @@ pub fn coverage(root: &Path, from: i64, to: i64) -> Result<Coverage, TapeError> 
 pub(crate) fn collect_gaps(root: &Path, out: &mut BTreeMap<(String, String), Vec<(i64, i64)>>) {
     let scope = format!("kind={}", Kind::Gaps.as_str());
     let scopes = [scope.as_str()];
-    if !galata_datawatch::tape::reader::unwritten(root, &scopes).is_empty() {
-        return;
-    }
+    // No gaps written and gaps unreadable both mean nothing to bucket, and
+    // `open` refuses an unwritten scope itself: asking `unwritten` first
+    // only walked the whole kind a second time.
     let Ok(reader) = galata_datawatch::tape::reader::Reader::open(root, &scopes) else {
         return;
     };

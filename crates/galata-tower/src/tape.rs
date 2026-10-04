@@ -245,9 +245,8 @@ pub fn instruments(root: &Path) -> Instruments {
         let scopes = [scope.as_str()];
         // A kind that has written nothing is silence, not a refusal: the
         // caller asked what the record holds, and *not this* is an answer.
-        if !galata_datawatch::tape::reader::unwritten(root, &scopes).is_empty() {
-            continue;
-        }
+        // `open` refuses an unwritten scope itself, so asking `unwritten`
+        // first only walked the whole kind a second time — see `bounds`.
         let Ok(reader) = galata_datawatch::tape::reader::Reader::open(root, &scopes) else {
             continue;
         };

@@ -176,14 +176,20 @@ fn read_kind(
 ) -> Result<Vec<RecordBatch>, TapeError> {
     let scope = format!("kind={}", kind.as_str());
     let scopes = [scope.as_str()];
-    if !galata_datawatch::tape::reader::unwritten(root, &scopes).is_empty() {
-        return Ok(Vec::new());
-    }
     let unreadable = |error: &dyn std::fmt::Display| TapeError::Unreadable {
         detail: error.to_string(),
     };
-    let reader =
-        galata_datawatch::tape::reader::Reader::open(root, &scopes).map_err(|e| unreadable(&e))?;
+    // The reader refuses an unwritten scope with its own name for it, so the
+    // refusal IS the "has anything written?" answer — asking `unwritten`
+    // first only walked the whole kind a second time (28ms a second over
+    // 2,230 candle partitions, measured 2026-09-26; see `tape::bounds`).
+    let reader = match galata_datawatch::tape::reader::Reader::open(root, &scopes) {
+        Ok(reader) => reader,
+        Err(galata_datawatch::tape::reader::ReadError::NoFrontier { .. }) => {
+            return Ok(Vec::new());
+        }
+        Err(e) => return Err(unreadable(&e)),
+    };
     reader
         .view(galata_datawatch::tape::reader::Window {
             kind,

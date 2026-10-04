@@ -212,31 +212,34 @@ pub fn view(
     let scope = format!("kind={}", kind.as_str());
     let scopes = [scope.as_str()];
 
-    // Asked before opening, because `Bound::of` refuses either way and this is
-    // the only place the two can be told apart. A dataset that has written
-    // nothing is not an unreadable store.
-    // **An answer, not a refusal.** The same condition `bounds` skips and
-    // `coverage` reports as an empty summary — and which `/v1/gaps` calls the
-    // good answer. Treating it as an error in one surface of four is what left
-    // the screen unable to render its own case.
-    if !galata_datawatch::tape::reader::unwritten(root, &scopes).is_empty() {
-        return Ok(View {
-            kind: kind.as_str().to_owned(),
-            bound: BTreeMap::new(),
-            written: false,
-            total: 0,
-            rows: Vec::new(),
-        });
-    }
-
     // Opened per request, so the bound is what is durable NOW rather than at
     // boot: a tower that had been running a day would otherwise serve a day-old
     // ceiling.
-    let reader = galata_datawatch::tape::reader::Reader::open(root, &scopes).map_err(|error| {
-        TapeError::Unreadable {
-            detail: error.to_string(),
+    //
+    // **An unwritten dataset is an answer, not a refusal.** The same
+    // condition `bounds` skips and `coverage` reports as an empty summary —
+    // and which `/v1/gaps` calls the good answer. Treating it as an error in
+    // one surface of four is what left the screen unable to render its own
+    // case. The reader names that condition in its refusal (`NoFrontier`),
+    // so it is told apart here without asking `unwritten` first, which only
+    // walked the whole kind a second time.
+    let reader = match galata_datawatch::tape::reader::Reader::open(root, &scopes) {
+        Ok(reader) => reader,
+        Err(galata_datawatch::tape::reader::ReadError::NoFrontier { .. }) => {
+            return Ok(View {
+                kind: kind.as_str().to_owned(),
+                bound: BTreeMap::new(),
+                written: false,
+                total: 0,
+                rows: Vec::new(),
+            });
         }
-    })?;
+        Err(error) => {
+            return Err(TapeError::Unreadable {
+                detail: error.to_string(),
+            });
+        }
+    };
     let window = galata_datawatch::tape::reader::Window {
         kind,
         from_micros: from,

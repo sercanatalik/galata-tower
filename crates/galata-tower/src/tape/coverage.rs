@@ -89,9 +89,9 @@ pub fn covered_days(root: &Path) -> Covered {
         }
         let scope = format!("kind={}", kind.as_str());
         let scopes = [scope.as_str()];
-        if !galata_datawatch::tape::reader::unwritten(root, &scopes).is_empty() {
-            continue;
-        }
+        // Unwritten and unreadable both mean no windows from this kind, and
+        // `open` refuses an unwritten scope itself: asking `unwritten` first
+        // only walked the whole kind a second time.
         let Ok(reader) = galata_datawatch::tape::reader::Reader::open(root, &scopes) else {
             continue;
         };
@@ -323,9 +323,7 @@ pub fn rates(root: &Path, limit: usize) -> Rates {
     for kind in SERVED {
         let scope = format!("kind={}", kind.as_str());
         let scopes = [scope.as_str()];
-        if !galata_datawatch::tape::reader::unwritten(root, &scopes).is_empty() {
-            continue;
-        }
+        // As in covered_days: both silences skip, so `open` alone decides.
         let Ok(reader) = galata_datawatch::tape::reader::Reader::open(root, &scopes) else {
             continue;
         };
