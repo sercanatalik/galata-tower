@@ -198,27 +198,87 @@ fn dec<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a Decimal128Array, Ta
     crate::column!(batch, name, Decimal128Array, "Decimal128")
 }
 
+/// Segment facts the tape frontier is folded from, computed once per segment.
+///
+/// A segment is immutable once renamed (`galata_segments` commits by rename),
+/// so whose rows it holds and the newest arrival among them are facts that
+/// cannot change. The watch asks for the frontier whenever the tape moved —
+/// once a second under live capture — and without this it re-decoded the
+/// entire history each time for an answer only the newest segments could have
+/// changed: O(every row ever written) of blocking CPU, growing without bound.
+///
+/// Caller-owned, like the reader's `LabelCache`: a library holding state
+/// nobody asked for is state nobody can bound or drop.
+#[derive(Debug, Default)]
+pub struct FrontierCache {
+    listing: galata_segments::ListingCache,
+    /// Per committed segment: each venue's newest `recv_micros` among its
+    /// rows. Empty for a segment that will not read or has no such columns —
+    /// remembered, so a broken file is not re-read every second.
+    segments: std::sync::Mutex<BTreeMap<PathBuf, Vec<(String, i64)>>>,
+}
+
 /// The newest arrival each venue's tape holds, across every served dataset.
-pub fn tape_frontier(root: &Path) -> Frontier {
-    let mut out = Frontier::new();
+///
+/// Decodes each segment once, ever: the first call pays for the whole tape,
+/// the calls after it only for segments that appeared since. Entries for
+/// segments compaction removed are dropped on the way, so the cache holds
+/// exactly what the tape does.
+pub fn tape_frontier(root: &Path, cache: &FrontierCache) -> Frontier {
+    let mut listings = Vec::new();
     for kind in tape::SERVED {
-        let Ok(batches) = read_kind(root, kind, None) else {
-            continue;
-        };
-        for batch in &batches {
-            let (Ok(venue), Ok(recv)) = (text(batch, "venue"), int(batch, "recv_micros")) else {
-                continue;
-            };
-            for i in 0..batch.num_rows() {
-                if venue.is_null(i) || recv.is_null(i) {
-                    continue;
-                }
-                let seen = out.entry(venue.value(i).to_owned()).or_insert(i64::MIN);
-                *seen = (*seen).max(recv.value(i));
-            }
+        let scope = root.join(format!("kind={}", kind.as_str()));
+        for (_, segments) in cache.listing.partitions_with_segments(&scope) {
+            listings.push(segments);
         }
     }
+
+    // One holder — the watch — so contention cannot arise; a poisoned lock
+    // means a panic mid-insert, and every value here is still whole.
+    let mut seen = match cache.segments.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let mut out = Frontier::new();
+    let mut listed: std::collections::HashSet<&Path> = std::collections::HashSet::new();
+    for segments in &listings {
+        for (_, path) in segments.iter() {
+            if !seen.contains_key(path) {
+                seen.insert(path.clone(), newest_arrivals(path));
+            }
+            for (venue, recv) in &seen[path] {
+                let edge = out.entry(venue.clone()).or_insert(i64::MIN);
+                *edge = (*edge).max(*recv);
+            }
+            listed.insert(path.as_path());
+        }
+    }
+    seen.retain(|path, _| listed.contains(path.as_path()));
     out
+}
+
+/// Each venue's newest arrival in one segment, or nothing it can say.
+///
+/// A batch without the two columns is skipped, not fatal, as the whole-tape
+/// fold before it skipped: the other segments still hold arrivals.
+fn newest_arrivals(path: &Path) -> Vec<(String, i64)> {
+    let Ok(batches) = galata_segments::read_segment(path) else {
+        return Vec::new();
+    };
+    let mut out: BTreeMap<String, i64> = BTreeMap::new();
+    for batch in &batches {
+        let (Ok(venue), Ok(recv)) = (text(batch, "venue"), int(batch, "recv_micros")) else {
+            continue;
+        };
+        for i in 0..batch.num_rows() {
+            if venue.is_null(i) || recv.is_null(i) {
+                continue;
+            }
+            let seen = out.entry(venue.value(i).to_owned()).or_insert(i64::MIN);
+            *seen = (*seen).max(recv.value(i));
+        }
+    }
+    out.into_iter().collect()
 }
 
 /// One recorded gap interval.
@@ -686,6 +746,65 @@ pub fn board(tape_root: &Path, archive_root: &Path, today: &str) -> Result<Datas
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One quotes segment under `root`, carrying each venue's arrival.
+    fn write_quotes(root: &Path, date: &str, seq: u64, arrivals: &[(&str, i64)]) {
+        use std::sync::Arc;
+        let schema = Arc::new(arrow::datatypes::Schema::new(vec![
+            arrow::datatypes::Field::new("venue", DataType::Utf8, false),
+            arrow::datatypes::Field::new("recv_micros", DataType::Int64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from_iter_values(
+                    arrivals.iter().map(|(v, _)| *v),
+                )),
+                Arc::new(Int64Array::from_iter_values(
+                    arrivals.iter().map(|(_, recv)| *recv),
+                )),
+            ],
+        )
+        .expect("the quote schema");
+        galata_segments::write_segment(
+            &root.join("kind=quotes").join(format!("date={date}")),
+            galata_segments::Cursor::Seq {
+                first: seq,
+                last: seq,
+            },
+            &batch,
+            galata_segments::Codec::Zstd,
+        )
+        .expect("the segment writes");
+    }
+
+    /// The frontier follows new segments through one cache: the growth case
+    /// the watch exercises every second, where each call used to re-decode
+    /// the whole history and now decodes only what appeared since.
+    #[test]
+    fn the_tape_frontier_follows_segments_through_the_cache() {
+        let dir = std::env::temp_dir().join(format!(
+            "galata-tower-frontier-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let cache = FrontierCache::default();
+        assert!(tape_frontier(&dir, &cache).is_empty(), "an empty tape has no frontier");
+
+        write_quotes(&dir, "2026-09-22", 1, &[("hyperliquid", 1_000), ("rh-crypto", 2_000)]);
+        let first = tape_frontier(&dir, &cache);
+        assert_eq!(first.get("hyperliquid"), Some(&1_000));
+        assert_eq!(first.get("rh-crypto"), Some(&2_000));
+
+        // A later segment moves its venue's edge; the quiet venue keeps its
+        // old one, found through the cache rather than a re-decode.
+        write_quotes(&dir, "2026-09-23", 2, &[("hyperliquid", 5_000)]);
+        let second = tape_frontier(&dir, &cache);
+        assert_eq!(second.get("hyperliquid"), Some(&5_000));
+        assert_eq!(second.get("rh-crypto"), Some(&2_000));
+    }
 
     fn minute(at: i64, o: i128, h: i128, l: i128, c: i128, v: i128) -> Minute {
         Minute {

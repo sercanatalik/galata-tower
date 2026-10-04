@@ -280,6 +280,10 @@ pub(crate) fn watch_the_record(
         // cold against 3.3 ms warm for 1,000 segments. A segment is immutable
         // once renamed, so a label read once stays read.
         let labels = Arc::new(galata_datawatch::tape::LabelCache::default());
+        // And one frontier cache: a segment's newest arrival is decoded the
+        // tick it appears and never again, where recomputing the frontier
+        // from scratch re-read the whole history every time the tape moved.
+        let frontier = Arc::new(shape::FrontierCache::default());
         let mut ticks: u64 = 0;
         loop {
             ticker.tick().await;
@@ -326,8 +330,9 @@ pub(crate) fn watch_the_record(
 
             // The archive's frontier is read from names alone; the tape's only when the tape moved.
             let (archive_root, tape_root) = (archive.clone(), tape.clone());
+            let fc = Arc::clone(&frontier);
             let Ok((arrived, tape_edge)) = tokio::task::spawn_blocking(move || {
-                let tape_edge = refresh_tape.then(|| shape::tape_frontier(&tape_root));
+                let tape_edge = refresh_tape.then(|| shape::tape_frontier(&tape_root, &fc));
                 (shape::archive_frontier(&archive_root), tape_edge)
             })
             .await
