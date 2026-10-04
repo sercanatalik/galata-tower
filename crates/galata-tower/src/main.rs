@@ -99,7 +99,7 @@ pub(crate) struct Tower {
 }
 
 /// The cached partition listing, with the stamps it is valid for.
-pub(crate) type Listing = std::sync::Mutex<Option<(Stamp, Vec<PathBuf>)>>;
+pub(crate) type Listing = std::sync::Mutex<Option<(Stamp, Arc<Vec<PathBuf>>)>>;
 
 /// Modification times of the root, `venue=` and `kind=` directories: they change when a partition appears or goes.
 pub(crate) type Stamp = Vec<(PathBuf, Option<SystemTime>)>;
@@ -347,14 +347,25 @@ impl Root {
 /// The screen, or its index for any path the client routes itself.
 async fn screen(uri: axum::http::Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
-    let file = Screen::get(path).or_else(|| Screen::get("index.html"));
-    match file {
-        Some(content) => {
-            let mime = mime_guess_for(path);
-            ([(header::CONTENT_TYPE, mime)], content.data.into_owned()).into_response()
-        }
-        None => (StatusCode::NOT_FOUND, "no screen is embedded in this build").into_response(),
-    }
+    // The mime is the FILE SERVED, not the path asked for. A browser holding
+    // a stale hashed asset path after a redeploy misses and falls back to
+    // the index; index.html labelled text/javascript is executed as a
+    // script and dies with an opaque syntax error, where text/html reloads
+    // the screen.
+    let (served, file) = match Screen::get(path) {
+        Some(file) => (path, file),
+        None => match Screen::get("index.html") {
+            Some(file) => ("index.html", file),
+            None => {
+                return (StatusCode::NOT_FOUND, "no screen is embedded in this build")
+                    .into_response();
+            }
+        },
+    };
+    // The Cow as rust-embed hands it: borrowed &'static bytes in release,
+    // where `into_owned()` copied the whole asset — the JS bundle, the
+    // 70KB font — once per request.
+    ([(header::CONTENT_TYPE, mime_guess_for(served))], file.data).into_response()
 }
 
 /// Enough of a type table for what a built screen actually contains.
@@ -371,16 +382,26 @@ fn mime_guess_for(path: &str) -> &'static str {
 }
 
 /// The partition listing, walked again only when a partition directory may have appeared or gone.
-pub(crate) fn cached_partitions(root: &std::path::Path, listing: &Listing) -> Vec<PathBuf> {
+///
+/// The lock is held to read and to store, never across the walk: a second
+/// request arriving during a cold walk takes its own walk on its own
+/// blocking thread instead of queueing behind the first for the whole
+/// filesystem pass. And a hit hands out the one shared Arc — owning the
+/// result deep-copied every path of the listing on every request.
+pub(crate) fn cached_partitions(root: &std::path::Path, listing: &Listing) -> Arc<Vec<PathBuf>> {
     let stamp = stamp_of(root);
-    let mut held = listing.lock().unwrap_or_else(|p| p.into_inner());
-    if let Some((seen, found)) = held.as_ref()
-        && *seen == stamp
     {
-        return found.clone();
+        let held = listing.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some((seen, found)) = held.as_ref()
+            && *seen == stamp
+        {
+            return Arc::clone(found);
+        }
     }
-    let found = galata_segments::partitions(root);
-    *held = Some((stamp, found.clone()));
+    let found = Arc::new(galata_segments::partitions(root));
+    // Racing walks each store the stamp they walked under; whichever lands
+    // last is a true pairing, and a stale one re-walks on its next miss.
+    *listing.lock().unwrap_or_else(|p| p.into_inner()) = Some((stamp, Arc::clone(&found)));
     found
 }
 
@@ -443,15 +464,30 @@ pub(crate) fn board_event(
     // during an outage used to be handed an empty list and nothing else, and
     // rendered "no venue has published status yet" — false, reassuring, and
     // worth an afternoon of looking in the wrong place.
-    let frame = Board {
+    //
+    // Serialized from references: cloning every venue's snapshot — each a
+    // multi-kilobyte JSON body — per connecting browser and per lag
+    // recovery copied the whole board only to serialize and drop it.
+    // [`Board`] stays the contract's lifetime-free statement of this shape.
+    #[derive(Serialize)]
+    struct Frame<'a> {
+        broker: BrokerState,
+        bounds: tape::Bounds,
+        venues: Vec<&'a Snapshot>,
+    }
+    let frame = Frame {
         broker,
         bounds,
-        venues: board.values().map(|s| (**s).clone()).collect(),
+        venues: board.values().map(|s| &**s).collect(),
     };
     axum::response::sse::Event::default()
         .event("board")
         .json_data(&frame)
-        .unwrap_or_else(|_| axum::response::sse::Event::default().event("board").data("{}"))
+        .unwrap_or_else(|_| {
+            axum::response::sse::Event::default()
+                .event("board")
+                .data("{}")
+        })
 }
 
 /// One received item as the event the browser sees.
@@ -466,20 +502,36 @@ pub(crate) fn event_for(
         Ok(Live::Status(snapshot)) => axum::response::sse::Event::default()
             .event("status")
             .json_data(&*snapshot)
-            .unwrap_or_else(|_| axum::response::sse::Event::default().event("status").data("{}")),
+            .unwrap_or_else(|_| {
+                axum::response::sse::Event::default()
+                    .event("status")
+                    .data("{}")
+            }),
         // Its own event name, so a browser dispatches rather than inspects.
         Ok(Live::Broker(state)) => axum::response::sse::Event::default()
             .event("broker")
             .json_data(&state)
-            .unwrap_or_else(|_| axum::response::sse::Event::default().event("broker").data("{}")),
+            .unwrap_or_else(|_| {
+                axum::response::sse::Event::default()
+                    .event("broker")
+                    .data("{}")
+            }),
         Ok(Live::Tape(moved)) => axum::response::sse::Event::default()
             .event("tape")
             .json_data(&moved)
-            .unwrap_or_else(|_| axum::response::sse::Event::default().event("tape").data("{}")),
+            .unwrap_or_else(|_| {
+                axum::response::sse::Event::default()
+                    .event("tape")
+                    .data("{}")
+            }),
         Ok(Live::Archive(moved)) => axum::response::sse::Event::default()
             .event("archive")
             .json_data(&moved)
-            .unwrap_or_else(|_| axum::response::sse::Event::default().event("archive").data("{}")),
+            .unwrap_or_else(|_| {
+                axum::response::sse::Event::default()
+                    .event("archive")
+                    .data("{}")
+            }),
         // **A gap is an event, never an absence.** Dropping is safe only
         // because the stream is level-triggered -- the next snapshot is the
         // whole state -- and even then the browser is told how far it fell
@@ -488,7 +540,11 @@ pub(crate) fn event_for(
             axum::response::sse::Event::default()
                 .event("lagged")
                 .json_data(serde_json::json!({ "missed": missed }))
-                .unwrap_or_else(|_| axum::response::sse::Event::default().event("lagged").data("{}"))
+                .unwrap_or_else(|_| {
+                    axum::response::sse::Event::default()
+                        .event("lagged")
+                        .data("{}")
+                })
         }
     }
 }
@@ -852,7 +908,8 @@ mod tests {
         for _ in 0..200 {
             let got = background::jittered(wait);
             assert!(
-                got >= std::time::Duration::from_secs(6) && got <= std::time::Duration::from_secs(10),
+                got >= std::time::Duration::from_secs(6)
+                    && got <= std::time::Duration::from_secs(10),
                 "a quarter either side of eight seconds, got {got:?}"
             );
             seen.insert(got);
@@ -1061,7 +1118,8 @@ mod tests {
     #[test]
     fn the_default_threshold_is_what_compaction_leaves() {
         assert_eq!(
-            routes::about::COMPACTED_TO, 1,
+            routes::about::COMPACTED_TO,
+            1,
             "compaction leaves one segment, and `overdue_closed` keeps count > max"
         );
     }

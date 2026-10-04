@@ -1,14 +1,14 @@
 //! About, partitions and overdue routes.
 
-use axum::extract::{Query, State};
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
-use axum::Json;
-use serde::Deserialize;
-use utoipa::IntoParams;
 use crate::layout;
 use crate::routes::unfinished;
 use crate::{Partition, Root, Tower};
+use axum::Json;
+use axum::extract::{Query, State};
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+use serde::Deserialize;
+use utoipa::IntoParams;
 
 /// What a caller may narrow the overdue listing by.
 #[derive(Deserialize, IntoParams)]
@@ -35,16 +35,27 @@ pub(crate) const COMPACTED_TO: usize = 1;
 )]
 pub(crate) async fn about(State(tower): State<Tower>) -> Response {
     let (tape, cache) = (tower.tape.clone(), std::sync::Arc::clone(&tower.layout));
-    let tape_problems =
-        match tokio::task::spawn_blocking(move || layout::problems(&tape, &cache, layout::check))
-            .await
-        {
-            Ok(found) => found,
-            Err(join) => return unfinished(join),
-        };
+    let archive = tower.archive.clone();
+    // Root::of opens each root's directory, and that stays inside the
+    // blocking closure with the layout walk: against a hung disk those two
+    // read_dir calls on the runtime thread would stall every request
+    // scheduled on it — the exact failure layout.rs's header recounts.
+    let (tape_problems, archive_root, tape_root) = match tokio::task::spawn_blocking(move || {
+        let problems = layout::problems(&tape, &cache, layout::check);
+        (
+            problems,
+            Root::of(&archive, "GALATA_ARCHIVE"),
+            Root::of(&tape, "GALATA_TAPE"),
+        )
+    })
+    .await
+    {
+        Ok(found) => found,
+        Err(join) => return unfinished(join),
+    };
     Json(crate::About {
-        archive: Root::of(&tower.archive, "GALATA_ARCHIVE"),
-        tape: Root::of(&tower.tape, "GALATA_TAPE"),
+        archive: archive_root,
+        tape: tape_root,
         prune_on: galata_datawatch::tape::schema::PRUNE_ON
             .iter()
             .map(|column| (*column).to_owned())
@@ -71,11 +82,14 @@ pub(crate) async fn partitions(State(tower): State<Tower>) -> Response {
     let listing = std::sync::Arc::clone(&tower.listing);
     let walked = tokio::task::spawn_blocking(move || {
         std::fs::read_dir(&root)?;
+        // Borrowed from the shared listing: the response needs each
+        // partition's relative spelling, not a copy of its path.
         let found = crate::cached_partitions(&root, &listing)
-            .into_iter()
+            .iter()
             .map(|dir| {
-                let segments = galata_segments::list_segments(&dir).len();
-                (dir, segments)
+                let segments = galata_segments::list_segments(dir).len();
+                let path = dir.strip_prefix(&root).unwrap_or(dir).display().to_string();
+                (path, segments)
             })
             .collect::<Vec<_>>();
         Ok::<_, std::io::Error>(found)
@@ -89,14 +103,7 @@ pub(crate) async fn partitions(State(tower): State<Tower>) -> Response {
     Json(
         found
             .into_iter()
-            .map(|(path, segments)| Partition {
-                path: path
-                    .strip_prefix(&tower.archive)
-                    .unwrap_or(&path)
-                    .display()
-                    .to_string(),
-                segments,
-            })
+            .map(|(path, segments)| Partition { path, segments })
             .collect::<Vec<_>>(),
     )
     .into_response()

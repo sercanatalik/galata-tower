@@ -149,22 +149,26 @@ pub fn coverage(root: &Path, from: i64, to: i64) -> Result<Coverage, TapeError> 
     let scopes = [scope.as_str()];
 
     // A tape that has written no gaps is not an unreadable store, and it is
-    // not an error either: nothing missing is the good answer.
-    if !galata_datawatch::tape::reader::unwritten(root, &scopes).is_empty() {
-        return Ok(Coverage {
-            from,
-            to,
-            rows: 0,
-            bound: BTreeMap::new(),
-            causes: Vec::new(),
-        });
-    }
-
-    let reader = galata_datawatch::tape::reader::Reader::open(root, &scopes).map_err(|error| {
-        TapeError::Unreadable {
-            detail: error.to_string(),
+    // not an error either: nothing missing is the good answer. The reader
+    // refuses an unwritten scope with its own name for it, so the refusal IS
+    // that answer — asking `unwritten` first only walked the kind twice.
+    let reader = match galata_datawatch::tape::reader::Reader::open(root, &scopes) {
+        Ok(reader) => reader,
+        Err(galata_datawatch::tape::reader::ReadError::NoFrontier { .. }) => {
+            return Ok(Coverage {
+                from,
+                to,
+                rows: 0,
+                bound: BTreeMap::new(),
+                causes: Vec::new(),
+            });
         }
-    })?;
+        Err(error) => {
+            return Err(TapeError::Unreadable {
+                detail: error.to_string(),
+            });
+        }
+    };
     let batches = reader
         .view(galata_datawatch::tape::reader::Window {
             kind,
@@ -230,38 +234,36 @@ pub fn coverage(root: &Path, from: i64, to: i64) -> Result<Coverage, TapeError> 
 /// **A gap across midnight is charged to both days**, clipped at the boundary,
 /// because it is missing from both.
 pub(crate) fn collect_gaps(root: &Path, out: &mut BTreeMap<(String, String), Vec<(i64, i64)>>) {
-    let scope = format!("kind={}", Kind::Gaps.as_str());
-    let scopes = [scope.as_str()];
-    if !galata_datawatch::tape::reader::unwritten(root, &scopes).is_empty() {
-        return;
-    }
-    let Ok(reader) = galata_datawatch::tape::reader::Reader::open(root, &scopes) else {
-        return;
-    };
-    let Ok(batches) = reader.view(galata_datawatch::tape::reader::Window {
-        kind: Kind::Gaps,
-        from_micros: i64::MIN + 1,
-        to_micros: i64::MAX,
-        ticker: None,
-    }) else {
+    // Through the one shared read: no gaps written is an empty batch list,
+    // and gaps that will not read leave nothing to bucket, as before.
+    let Ok(batches) = super::read_kind(root, Kind::Gaps, None, super::ALL_TIME) else {
         return;
     };
     for batch in &batches {
-        let venue = crate::column!(batch, "venue", StringArray, "Utf8");
-        let from = crate::column!(batch, "from_micros", Int64Array, "Int64");
-        let to = crate::column!(batch, "to_micros", Int64Array, "Int64");
-        let (Ok(venue), Ok(from), Ok(to)) = (venue, from, to) else {
+        gaps_by_day(batch, out);
+    }
+}
+
+/// One gaps batch bucketed by day — the per-batch half of [`collect_gaps`],
+/// shared with the board's single pass over the tape.
+pub(crate) fn gaps_by_day(
+    batch: &arrow::array::RecordBatch,
+    out: &mut BTreeMap<(String, String), Vec<(i64, i64)>>,
+) {
+    let venue = crate::column!(batch, "venue", StringArray, "Utf8");
+    let from = crate::column!(batch, "from_micros", Int64Array, "Int64");
+    let to = crate::column!(batch, "to_micros", Int64Array, "Int64");
+    let (Ok(venue), Ok(from), Ok(to)) = (venue, from, to) else {
+        return;
+    };
+    for i in 0..batch.num_rows() {
+        if venue.is_null(i) || from.is_null(i) || to.is_null(i) {
             continue;
-        };
-        for i in 0..batch.num_rows() {
-            if venue.is_null(i) || from.is_null(i) || to.is_null(i) {
-                continue;
-            }
-            for (date, span) in super::coverage::split_by_day(from.value(i), to.value(i)) {
-                out.entry((venue.value(i).to_owned(), date))
-                    .or_default()
-                    .push(span);
-            }
+        }
+        for (date, span) in super::coverage::split_by_day(from.value(i), to.value(i)) {
+            out.entry((venue.value(i).to_owned(), date))
+                .or_default()
+                .push(span);
         }
     }
 }

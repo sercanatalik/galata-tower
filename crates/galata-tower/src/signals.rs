@@ -98,9 +98,9 @@ pub fn width_micros(horizon: &str) -> Option<i64> {
     }
 }
 
-/// One row, taken from a batch by column name.
+/// One row, taken from a batch by column name. Its horizon travels beside it
+/// as the key of whichever map holds it, not inside it.
 struct Row {
-    horizon: String,
     asof: i64,
     computed: i64,
     model: String,
@@ -131,7 +131,13 @@ pub fn latest(tape: &Path, signal: &str, now_micros: i64) -> Signals {
 
     let mut settled: BTreeMap<String, Vec<Row>> = BTreeMap::new();
     for date in dates {
-        let mut here: BTreeMap<String, Vec<Row>> = BTreeMap::new();
+        // Per horizon, this date's winning run — the newest asof, and of that
+        // asof the newest computation, should one have been repeated — and
+        // its rows. Judged on the raw columns: a row that cannot win is never
+        // built, where collecting every row first allocated seven strings
+        // apiece for figures the next comparison threw away.
+        let mut best: BTreeMap<String, (i64, i64)> = BTreeMap::new();
+        let mut winners: BTreeMap<String, Vec<Row>> = BTreeMap::new();
         for (_, path) in galata_segments::list_segments(&root.join(format!("date={date}"))) {
             // A segment that will not read is skipped, not fatal: the others
             // still hold figures, and the watch reports a broken segment.
@@ -139,28 +145,33 @@ pub fn latest(tape: &Path, signal: &str, now_micros: i64) -> Signals {
                 continue;
             };
             for batch in &batches {
-                for row in rows(batch, signal) {
-                    if !settled.contains_key(&row.horizon) {
-                        here.entry(row.horizon.clone()).or_default().push(row);
+                let Some(cols) = Cols::of(batch) else {
+                    continue;
+                };
+                for i in 0..batch.num_rows() {
+                    if cols.signal.value(i) != signal {
+                        continue;
+                    }
+                    let horizon = cols.horizon.value(i);
+                    if settled.contains_key(horizon) {
+                        continue;
+                    }
+                    let run = (cols.asof.value(i), cols.computed.value(i));
+                    match best.get(horizon) {
+                        Some(&b) if run < b => {}
+                        Some(&b) if run == b => winners
+                            .get_mut(horizon)
+                            .expect("a best run has rows")
+                            .push(cols.row(i)),
+                        _ => {
+                            best.insert(horizon.to_owned(), run);
+                            winners.insert(horizon.to_owned(), vec![cols.row(i)]);
+                        }
                     }
                 }
             }
         }
-        for (horizon, rows) in here {
-            // The newest asof in the newest partition holding the horizon,
-            // and of that asof the newest run, should one have been repeated.
-            let best = rows
-                .iter()
-                .map(|r| (r.asof, r.computed))
-                .max()
-                .expect("a horizon came from a row");
-            settled.insert(
-                horizon,
-                rows.into_iter()
-                    .filter(|r| (r.asof, r.computed) == best)
-                    .collect(),
-            );
-        }
+        settled.extend(winners);
     }
 
     let mut horizons: Vec<HorizonFigures> = settled
@@ -270,19 +281,34 @@ pub fn history(tape: &Path, query: &HistoryQuery, now_micros: i64) -> Result<His
                 continue;
             };
             for batch in &batches {
-                for row in rows(batch, &query.signal) {
-                    if row.horizon != query.horizon
-                        || row.cell.measure != query.measure
-                        || row.cell.ticker_i != query.ticker_i
-                        || row.cell.ticker_j != query.ticker_j
+                // Judged on the raw columns; a point is built only once it is
+                // known to be the series' and newer than what is kept.
+                let Some(cols) = Cols::of(batch) else {
+                    continue;
+                };
+                for i in 0..batch.num_rows() {
+                    if cols.signal.value(i) != query.signal
+                        || cols.horizon.value(i) != query.horizon
+                        || cols.measure.value(i) != query.measure
+                        || cols.ticker_i.value(i) != query.ticker_i
                     {
                         continue;
                     }
+                    let pair = match &query.ticker_j {
+                        Some(t) => {
+                            !cols.ticker_j.is_null(i) && cols.ticker_j.value(i) == t.as_str()
+                        }
+                        None => cols.ticker_j.is_null(i),
+                    };
+                    if !pair {
+                        continue;
+                    }
+                    let asof = cols.asof.value(i);
                     let newer = by_asof
-                        .get(&row.asof)
-                        .is_none_or(|kept| row.computed > kept.computed);
+                        .get(&asof)
+                        .is_none_or(|kept| cols.computed.value(i) > kept.computed);
                     if newer {
-                        by_asof.insert(row.asof, row);
+                        by_asof.insert(asof, cols.row(i));
                     }
                 }
             }
@@ -302,79 +328,85 @@ pub fn history(tape: &Path, query: &HistoryQuery, now_micros: i64) -> Result<His
     })
 }
 
-fn rows(batch: &RecordBatch, signal: &str) -> Vec<Row> {
-    let text = |name: &str| {
-        batch
-            .column_by_name(name)
-            .and_then(|c| c.as_any().downcast_ref::<StringArray>().cloned())
-    };
-    let int = |name: &str| {
-        batch
-            .column_by_name(name)
-            .and_then(|c| c.as_any().downcast_ref::<Int64Array>().cloned())
-    };
-    let float = |name: &str| {
-        batch
-            .column_by_name(name)
-            .and_then(|c| c.as_any().downcast_ref::<Float64Array>().cloned())
-    };
-    let boolean = |name: &str| {
-        batch
-            .column_by_name(name)
-            .and_then(|c| c.as_any().downcast_ref::<BooleanArray>().cloned())
-    };
-    let (
-        Some(sig),
-        Some(horizon),
-        Some(measure),
-        Some(ti),
-        Some(tj),
-        Some(value),
-        Some(absent),
-        Some(n_eff),
-    ) = (
-        text("signal"),
-        text("horizon"),
-        text("measure"),
-        text("ticker_i"),
-        text("ticker_j"),
-        float("value"),
-        text("absent"),
-        float("n_eff"),
-    )
-    else {
-        return Vec::new();
-    };
-    let (Some(asof), Some(computed), Some(model), Some(params), Some(fitted)) = (
-        int("asof_micros"),
-        int("computed_micros"),
-        text("model"),
-        text("params"),
-        boolean("fitted"),
-    ) else {
-        return Vec::new();
-    };
-    let opt_text = |a: &StringArray, i: usize| (!a.is_null(i)).then(|| a.value(i).to_string());
-    let opt_float = |a: &Float64Array, i: usize| (!a.is_null(i)).then(|| a.value(i));
-    (0..batch.num_rows())
-        .filter(|&i| sig.value(i) == signal)
-        .map(|i| Row {
-            horizon: horizon.value(i).to_string(),
-            asof: asof.value(i),
-            computed: computed.value(i),
-            model: model.value(i).to_string(),
-            params: params.value(i).to_string(),
-            fitted: fitted.value(i),
-            cell: SignalCell {
-                measure: measure.value(i).to_string(),
-                ticker_i: ti.value(i).to_string(),
-                ticker_j: opt_text(&tj, i),
-                value: opt_float(&value, i),
-                absent: opt_text(&absent, i),
-                n_eff: opt_float(&n_eff, i),
-            },
+/// One batch's signal columns, downcast once.
+///
+/// The callers filter on these raw values and call [`Cols::row`] only for a
+/// row that earns it: a `Row` owns seven strings, and most rows a read walks
+/// over are another signal's, another run's, or another pair's.
+struct Cols {
+    signal: StringArray,
+    horizon: StringArray,
+    measure: StringArray,
+    ticker_i: StringArray,
+    ticker_j: StringArray,
+    value: Float64Array,
+    absent: StringArray,
+    n_eff: Float64Array,
+    asof: Int64Array,
+    computed: Int64Array,
+    model: StringArray,
+    params: StringArray,
+    fitted: BooleanArray,
+}
+
+impl Cols {
+    /// The columns a signal row reads, or None where the batch lacks any —
+    /// a batch of some other shape describes no signal.
+    fn of(batch: &RecordBatch) -> Option<Cols> {
+        let text = |name: &str| {
+            batch
+                .column_by_name(name)
+                .and_then(|c| c.as_any().downcast_ref::<StringArray>().cloned())
+        };
+        let int = |name: &str| {
+            batch
+                .column_by_name(name)
+                .and_then(|c| c.as_any().downcast_ref::<Int64Array>().cloned())
+        };
+        let float = |name: &str| {
+            batch
+                .column_by_name(name)
+                .and_then(|c| c.as_any().downcast_ref::<Float64Array>().cloned())
+        };
+        Some(Cols {
+            signal: text("signal")?,
+            horizon: text("horizon")?,
+            measure: text("measure")?,
+            ticker_i: text("ticker_i")?,
+            ticker_j: text("ticker_j")?,
+            value: float("value")?,
+            absent: text("absent")?,
+            n_eff: float("n_eff")?,
+            asof: int("asof_micros")?,
+            computed: int("computed_micros")?,
+            model: text("model")?,
+            params: text("params")?,
+            fitted: batch
+                .column_by_name("fitted")
+                .and_then(|c| c.as_any().downcast_ref::<BooleanArray>().cloned())?,
         })
-        .collect()
+    }
+
+    /// The owned row, built only once it is known to be wanted.
+    fn row(&self, i: usize) -> Row {
+        let opt_text = |a: &StringArray| (!a.is_null(i)).then(|| a.value(i).to_string());
+        let opt_float = |a: &Float64Array| (!a.is_null(i)).then(|| a.value(i));
+        Row {
+            asof: self.asof.value(i),
+            computed: self.computed.value(i),
+            model: self.model.value(i).to_string(),
+            params: self.params.value(i).to_string(),
+            fitted: self.fitted.value(i),
+            cell: SignalCell {
+                measure: self.measure.value(i).to_string(),
+                ticker_i: self.ticker_i.value(i).to_string(),
+                ticker_j: opt_text(&self.ticker_j),
+                value: opt_float(&self.value),
+                absent: opt_text(&self.absent),
+                n_eff: opt_float(&self.n_eff),
+            },
+        }
+    }
 }
 
 #[cfg(test)]

@@ -12,9 +12,9 @@ pub(crate) mod signals;
 pub(crate) mod status;
 pub(crate) mod tape;
 
+use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde::Serialize;
 
 /// A read that panicked or was cancelled.
@@ -31,7 +31,9 @@ pub(crate) fn unfinished(join: tokio::task::JoinError) -> Response {
 /// The closure runs on a blocking thread. A `TapeError` (or any `Display`)
 /// becomes a `400`; a panic or cancellation becomes a `500` via
 /// [`unfinished`].
-pub(crate) async fn blocking_json<T, E>(f: impl FnOnce() -> Result<T, E> + Send + 'static) -> Response
+pub(crate) async fn blocking_json<T, E>(
+    f: impl FnOnce() -> Result<T, E> + Send + 'static,
+) -> Response
 where
     T: Serialize + Send + 'static,
     E: std::fmt::Display + Send + 'static,

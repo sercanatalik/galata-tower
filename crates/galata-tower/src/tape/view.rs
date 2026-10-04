@@ -135,29 +135,28 @@ fn value_at(
 /// The newest `limit` rows, formatted.
 ///
 /// Only the tail is formatted. The batches are walked from the end until
-/// enough rows are in hand, so a cap of forty over a window of forty thousand
-/// does the work of forty.
+/// enough rows are in hand, and the first kept batch is **sliced** — a
+/// zero-copy view over the same arrays — before any cell is rendered, so a
+/// cap of forty over a window of forty thousand does the work of forty even
+/// when the reader hands the window back as one large batch. The first
+/// version formatted the whole batch and drained the prefix, which spent the
+/// dominant cost (rendering, 46ms of a 61ms whole-tape read) on rows the cap
+/// was about to throw away.
 fn newest(batches: &[RecordBatch], limit: usize) -> Result<Vec<Value>, TapeError> {
     let total: usize = batches.iter().map(|batch| batch.num_rows()).sum();
     let skip = total.saturating_sub(limit);
     let mut seen = 0usize;
-    let mut tail: Vec<&RecordBatch> = Vec::new();
-    let mut offset_in_first = 0usize;
+    let mut tail: Vec<RecordBatch> = Vec::new();
     for batch in batches {
         let next = seen + batch.num_rows();
         if next > skip {
-            if tail.is_empty() {
-                offset_in_first = skip.saturating_sub(seen);
-            }
-            tail.push(batch);
+            // Zero for every kept batch after the first: seen has passed skip.
+            let offset = skip.saturating_sub(seen);
+            tail.push(batch.slice(offset, batch.num_rows() - offset));
         }
         seen = next;
     }
-    let mut out = rows(&tail.into_iter().cloned().collect::<Vec<_>>())?;
-    if offset_in_first > 0 && offset_in_first <= out.len() {
-        out.drain(..offset_in_first);
-    }
-    Ok(out)
+    rows(&tail)
 }
 
 /// Batches as rows, decimals as strings.
@@ -213,31 +212,34 @@ pub fn view(
     let scope = format!("kind={}", kind.as_str());
     let scopes = [scope.as_str()];
 
-    // Asked before opening, because `Bound::of` refuses either way and this is
-    // the only place the two can be told apart. A dataset that has written
-    // nothing is not an unreadable store.
-    // **An answer, not a refusal.** The same condition `bounds` skips and
-    // `coverage` reports as an empty summary — and which `/v1/gaps` calls the
-    // good answer. Treating it as an error in one surface of four is what left
-    // the screen unable to render its own case.
-    if !galata_datawatch::tape::reader::unwritten(root, &scopes).is_empty() {
-        return Ok(View {
-            kind: kind.as_str().to_owned(),
-            bound: BTreeMap::new(),
-            written: false,
-            total: 0,
-            rows: Vec::new(),
-        });
-    }
-
     // Opened per request, so the bound is what is durable NOW rather than at
     // boot: a tower that had been running a day would otherwise serve a day-old
     // ceiling.
-    let reader = galata_datawatch::tape::reader::Reader::open(root, &scopes).map_err(|error| {
-        TapeError::Unreadable {
-            detail: error.to_string(),
+    //
+    // **An unwritten dataset is an answer, not a refusal.** The same
+    // condition `bounds` skips and `coverage` reports as an empty summary —
+    // and which `/v1/gaps` calls the good answer. Treating it as an error in
+    // one surface of four is what left the screen unable to render its own
+    // case. The reader names that condition in its refusal (`NoFrontier`),
+    // so it is told apart here without asking `unwritten` first, which only
+    // walked the whole kind a second time.
+    let reader = match galata_datawatch::tape::reader::Reader::open(root, &scopes) {
+        Ok(reader) => reader,
+        Err(galata_datawatch::tape::reader::ReadError::NoFrontier { .. }) => {
+            return Ok(View {
+                kind: kind.as_str().to_owned(),
+                bound: BTreeMap::new(),
+                written: false,
+                total: 0,
+                rows: Vec::new(),
+            });
         }
-    })?;
+        Err(error) => {
+            return Err(TapeError::Unreadable {
+                detail: error.to_string(),
+            });
+        }
+    };
     let window = galata_datawatch::tape::reader::Window {
         kind,
         from_micros: from,
@@ -269,6 +271,36 @@ mod tests {
     fn tape_root() -> Option<std::path::PathBuf> {
         let root = std::path::PathBuf::from("../../../galata-datawatch/var/tape");
         root.is_dir().then_some(root)
+    }
+
+    /// The cap keeps the newest rows across batch boundaries, slicing into
+    /// the first kept batch rather than formatting and draining it — the
+    /// case a real tape only exercises by accident of its batch sizes.
+    #[test]
+    fn the_cap_slices_into_the_first_kept_batch() {
+        use arrow::array::Int64Array;
+        use std::sync::Arc;
+        let schema = Arc::new(arrow::datatypes::Schema::new(vec![
+            arrow::datatypes::Field::new("seq", arrow::datatypes::DataType::Int64, false),
+        ]));
+        let batch = |values: &[i64]| {
+            RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(Int64Array::from(values.to_vec()))],
+            )
+            .expect("one column of sequences")
+        };
+        let batches = [batch(&[0, 1, 2]), batch(&[3, 4, 5, 6])];
+        let out = newest(&batches, 5).expect("rows format");
+        let seqs: Vec<i64> = out
+            .iter()
+            .map(|row| row["seq"].as_i64().expect("a sequence"))
+            .collect();
+        assert_eq!(seqs, vec![2, 3, 4, 5, 6], "the newest five, oldest first");
+
+        // A cap wider than the window changes nothing.
+        let all = newest(&batches, 100).expect("rows format");
+        assert_eq!(all.len(), 7);
     }
 
     /// **The claim this module exists for**, checked against real rows rather

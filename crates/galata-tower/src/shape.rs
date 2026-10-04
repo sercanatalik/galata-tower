@@ -13,7 +13,7 @@ use arrow::datatypes::DataType;
 use galata_wire::Kind;
 use serde::Serialize;
 
-use crate::tape::{self, TapeError};
+use crate::tape::{self, ALL_TIME, TapeError, read_kind};
 
 /// Two receipts further apart than this are two runs, not one.
 pub const RUN_BREAK_MICROS: i64 = 60_000_000;
@@ -160,32 +160,6 @@ fn levels(dir: &Path, prefix: &str) -> Vec<(String, PathBuf)> {
     out
 }
 
-/// Every row of one tape dataset, or none when the dataset is unwritten.
-fn read_kind(
-    root: &Path,
-    kind: Kind,
-    ticker: Option<String>,
-) -> Result<Vec<RecordBatch>, TapeError> {
-    let scope = format!("kind={}", kind.as_str());
-    let scopes = [scope.as_str()];
-    if !galata_datawatch::tape::reader::unwritten(root, &scopes).is_empty() {
-        return Ok(Vec::new());
-    }
-    let unreadable = |error: &dyn std::fmt::Display| TapeError::Unreadable {
-        detail: error.to_string(),
-    };
-    let reader =
-        galata_datawatch::tape::reader::Reader::open(root, &scopes).map_err(|e| unreadable(&e))?;
-    reader
-        .view(galata_datawatch::tape::reader::Window {
-            kind,
-            from_micros: i64::MIN + 1,
-            to_micros: i64::MAX,
-            ticker,
-        })
-        .map_err(|e| unreadable(&e))
-}
-
 fn text<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a StringArray, TapeError> {
     crate::column!(batch, name, StringArray, "Utf8")
 }
@@ -198,27 +172,87 @@ fn dec<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a Decimal128Array, Ta
     crate::column!(batch, name, Decimal128Array, "Decimal128")
 }
 
+/// Segment facts the tape frontier is folded from, computed once per segment.
+///
+/// A segment is immutable once renamed (`galata_segments` commits by rename),
+/// so whose rows it holds and the newest arrival among them are facts that
+/// cannot change. The watch asks for the frontier whenever the tape moved —
+/// once a second under live capture — and without this it re-decoded the
+/// entire history each time for an answer only the newest segments could have
+/// changed: O(every row ever written) of blocking CPU, growing without bound.
+///
+/// Caller-owned, like the reader's `LabelCache`: a library holding state
+/// nobody asked for is state nobody can bound or drop.
+#[derive(Debug, Default)]
+pub struct FrontierCache {
+    listing: galata_segments::ListingCache,
+    /// Per committed segment: each venue's newest `recv_micros` among its
+    /// rows. Empty for a segment that will not read or has no such columns —
+    /// remembered, so a broken file is not re-read every second.
+    segments: std::sync::Mutex<BTreeMap<PathBuf, Vec<(String, i64)>>>,
+}
+
 /// The newest arrival each venue's tape holds, across every served dataset.
-pub fn tape_frontier(root: &Path) -> Frontier {
-    let mut out = Frontier::new();
+///
+/// Decodes each segment once, ever: the first call pays for the whole tape,
+/// the calls after it only for segments that appeared since. Entries for
+/// segments compaction removed are dropped on the way, so the cache holds
+/// exactly what the tape does.
+pub fn tape_frontier(root: &Path, cache: &FrontierCache) -> Frontier {
+    let mut listings = Vec::new();
     for kind in tape::SERVED {
-        let Ok(batches) = read_kind(root, kind, None) else {
-            continue;
-        };
-        for batch in &batches {
-            let (Ok(venue), Ok(recv)) = (text(batch, "venue"), int(batch, "recv_micros")) else {
-                continue;
-            };
-            for i in 0..batch.num_rows() {
-                if venue.is_null(i) || recv.is_null(i) {
-                    continue;
-                }
-                let seen = out.entry(venue.value(i).to_owned()).or_insert(i64::MIN);
-                *seen = (*seen).max(recv.value(i));
-            }
+        let scope = root.join(format!("kind={}", kind.as_str()));
+        for (_, segments) in cache.listing.partitions_with_segments(&scope) {
+            listings.push(segments);
         }
     }
+
+    // One holder — the watch — so contention cannot arise; a poisoned lock
+    // means a panic mid-insert, and every value here is still whole.
+    let mut seen = match cache.segments.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let mut out = Frontier::new();
+    let mut listed: std::collections::HashSet<&Path> = std::collections::HashSet::new();
+    for segments in &listings {
+        for (_, path) in segments.iter() {
+            if !seen.contains_key(path) {
+                seen.insert(path.clone(), newest_arrivals(path));
+            }
+            for (venue, recv) in &seen[path] {
+                let edge = out.entry(venue.clone()).or_insert(i64::MIN);
+                *edge = (*edge).max(*recv);
+            }
+            listed.insert(path.as_path());
+        }
+    }
+    seen.retain(|path, _| listed.contains(path.as_path()));
     out
+}
+
+/// Each venue's newest arrival in one segment, or nothing it can say.
+///
+/// A batch without the two columns is skipped, not fatal, as the whole-tape
+/// fold before it skipped: the other segments still hold arrivals.
+fn newest_arrivals(path: &Path) -> Vec<(String, i64)> {
+    let Ok(batches) = galata_segments::read_segment(path) else {
+        return Vec::new();
+    };
+    let mut out: BTreeMap<String, i64> = BTreeMap::new();
+    for batch in &batches {
+        let (Ok(venue), Ok(recv)) = (text(batch, "venue"), int(batch, "recv_micros")) else {
+            continue;
+        };
+        for i in 0..batch.num_rows() {
+            if venue.is_null(i) || recv.is_null(i) {
+                continue;
+            }
+            let seen = out.entry(venue.value(i).to_owned()).or_insert(i64::MIN);
+            *seen = (*seen).max(recv.value(i));
+        }
+    }
+    out.into_iter().collect()
 }
 
 /// One recorded gap interval.
@@ -275,42 +309,66 @@ pub fn timeline(tape_root: &Path, archive_root: &Path) -> Result<Timeline, TapeE
         if kind == Kind::Gaps {
             continue;
         }
-        for batch in &read_kind(tape_root, kind, None)? {
+        for batch in &read_kind(tape_root, kind, None, ALL_TIME)? {
             let venue = text(batch, "venue")?;
             let recv = int(batch, "recv_micros")?;
             let at = int(batch, "at_micros").ok();
+            // Folded on the borrowed venue first: the global probe built the
+            // (venue, kind) key twice per row. `runs` sorts what it is
+            // handed, so regrouping by venue loses nothing.
+            let mut held_here: BTreeMap<&str, Vec<i64>> = BTreeMap::new();
+            let mut late_here: BTreeMap<&str, Vec<i64>> = BTreeMap::new();
             for i in 0..batch.num_rows() {
                 if venue.is_null(i) || recv.is_null(i) {
                     continue;
                 }
-                let key = (venue.value(i).to_owned(), kind.as_str().to_owned());
                 let r = recv.value(i);
-                held.entry(key.clone()).or_default().push(r);
+                held_here.entry(venue.value(i)).or_default().push(r);
                 if let Some(at) = at.filter(|a| !a.is_null(i))
                     && r - at.value(i) > BACKFILL_AFTER_MICROS
                 {
-                    late.entry(key).or_default().push(at.value(i));
+                    late_here
+                        .entry(venue.value(i))
+                        .or_default()
+                        .push(at.value(i));
                 }
+            }
+            for (venue, arrivals) in held_here {
+                held.entry((venue.to_owned(), kind.as_str().to_owned()))
+                    .or_default()
+                    .extend(arrivals);
+            }
+            for (venue, ats) in late_here {
+                late.entry((venue.to_owned(), kind.as_str().to_owned()))
+                    .or_default()
+                    .extend(ats);
             }
         }
     }
 
     let mut gaps: BTreeMap<(String, String), BTreeMap<String, Vec<Span>>> = BTreeMap::new();
-    for batch in &read_kind(tape_root, Kind::Gaps, None)? {
+    for batch in &read_kind(tape_root, Kind::Gaps, None, ALL_TIME)? {
         let venue = text(batch, "venue")?;
         let series = text(batch, "series")?;
         let cause = text(batch, "cause")?;
         let from = int(batch, "from_micros")?;
         let to = int(batch, "to_micros")?;
+        // On borrowed keys first, as above; `merge` sorts the spans later.
+        let mut here: BTreeMap<(&str, &str, &str), Vec<Span>> = BTreeMap::new();
         for i in 0..batch.num_rows() {
-            gaps.entry((venue.value(i).to_owned(), series.value(i).to_owned()))
-                .or_default()
-                .entry(cause.value(i).to_owned())
+            here.entry((venue.value(i), series.value(i), cause.value(i)))
                 .or_default()
                 .push(Span {
                     from: from.value(i),
                     to: to.value(i),
                 });
+        }
+        for ((venue, series, cause), spans) in here {
+            gaps.entry((venue.to_owned(), series.to_owned()))
+                .or_default()
+                .entry(cause.to_owned())
+                .or_default()
+                .extend(spans);
         }
     }
 
@@ -471,7 +529,11 @@ pub fn candles(
     }
     let mut folded: BTreeMap<i64, Minute> = BTreeMap::new();
     let mut scale: i8 = 18;
-    for batch in &read_kind(root, Kind::Candles, Some(ticker.to_owned()))? {
+    // The window goes to the reader: a chart of the last day decodes the
+    // last day's partitions, not the instrument's whole history. The per-row
+    // guard below still stands — it also covers rows with no venue time,
+    // which the reader keeps whatever the window.
+    for batch in &read_kind(root, Kind::Candles, Some(ticker.to_owned()), (from, to))? {
         let v = text(batch, "venue")?;
         let t = text(batch, "ticker")?;
         let at = int(batch, "at_micros")?;
@@ -633,23 +695,60 @@ pub struct Datasets {
 }
 
 /// The Overview's grid.
+///
+/// **One pass over each kind.** The grid needs row counts, day coverage and
+/// gap figures, which were three separate folds, each decoding the tape from
+/// scratch — and the gaps a third time besides, so one GET paid for the
+/// record two-to-three times over, once a second per open browser. The folds
+/// are unchanged; they now share the one decode.
 pub fn board(tape_root: &Path, archive_root: &Path, today: &str) -> Result<Datasets, TapeError> {
-    let held = tape::instruments(tape_root);
     let mut rows: BTreeMap<(String, String), usize> = BTreeMap::new();
-    for i in &held.instruments {
-        *rows.entry((i.venue.clone(), i.kind.clone())).or_default() += i.rows;
-    }
     let mut gap_rows: BTreeMap<(String, String), usize> = BTreeMap::new();
-    for batch in &read_kind(tape_root, Kind::Gaps, None)? {
-        let venue = text(batch, "venue")?;
-        let series = text(batch, "series")?;
-        for i in 0..batch.num_rows() {
-            *gap_rows
-                .entry((venue.value(i).to_owned(), series.value(i).to_owned()))
-                .or_default() += 1;
+    let mut windows = tape::DayWindows::new();
+    let mut gaps_by_day: BTreeMap<(String, String), Vec<(i64, i64)>> = BTreeMap::new();
+
+    for kind in tape::SERVED {
+        let batches = if kind == Kind::Gaps {
+            // The grid's gap figures are part of its answer, so a gaps tape
+            // that will not read is an error here, as it always was.
+            read_kind(tape_root, kind, None, ALL_TIME)?
+        } else {
+            // A kind that will not read leaves its cells out, as the
+            // separate folds did.
+            match read_kind(tape_root, kind, None, ALL_TIME) {
+                Ok(batches) => batches,
+                Err(_) => continue,
+            }
+        };
+        for batch in &batches {
+            // Rows counted as `tape::instruments` counts them: a row stands
+            // behind an instrument when venue and ticker are both there.
+            if let (Ok(venue), Ok(ticker)) = (text(batch, "venue"), text(batch, "ticker")) {
+                for i in 0..batch.num_rows() {
+                    if venue.is_null(i) || ticker.is_null(i) {
+                        continue;
+                    }
+                    *rows
+                        .entry((venue.value(i).to_owned(), kind.as_str().to_owned()))
+                        .or_default() += 1;
+                }
+            }
+            if kind == Kind::Gaps {
+                let venue = text(batch, "venue")?;
+                let series = text(batch, "series")?;
+                for i in 0..batch.num_rows() {
+                    *gap_rows
+                        .entry((venue.value(i).to_owned(), series.value(i).to_owned()))
+                        .or_default() += 1;
+                }
+                tape::gaps_by_day(batch, &mut gaps_by_day);
+            } else {
+                tape::day_window(kind, batch, &mut windows);
+            }
         }
     }
-    let covered = tape::covered_days(tape_root);
+
+    let covered = tape::covered_from(windows, gaps_by_day);
     let archive = archive_segments_on(archive_root, today);
     let venues: BTreeSet<String> = rows.keys().map(|(v, _)| v.clone()).collect();
 
@@ -686,6 +785,71 @@ pub fn board(tape_root: &Path, archive_root: &Path, today: &str) -> Result<Datas
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One quotes segment under `root`, carrying each venue's arrival.
+    fn write_quotes(root: &Path, date: &str, seq: u64, arrivals: &[(&str, i64)]) {
+        use std::sync::Arc;
+        let schema = Arc::new(arrow::datatypes::Schema::new(vec![
+            arrow::datatypes::Field::new("venue", DataType::Utf8, false),
+            arrow::datatypes::Field::new("recv_micros", DataType::Int64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from_iter_values(
+                    arrivals.iter().map(|(v, _)| *v),
+                )),
+                Arc::new(Int64Array::from_iter_values(
+                    arrivals.iter().map(|(_, recv)| *recv),
+                )),
+            ],
+        )
+        .expect("the quote schema");
+        galata_segments::write_segment(
+            &root.join("kind=quotes").join(format!("date={date}")),
+            galata_segments::Cursor::Seq {
+                first: seq,
+                last: seq,
+            },
+            &batch,
+            galata_segments::Codec::Zstd,
+        )
+        .expect("the segment writes");
+    }
+
+    /// The frontier follows new segments through one cache: the growth case
+    /// the watch exercises every second, where each call used to re-decode
+    /// the whole history and now decodes only what appeared since.
+    #[test]
+    fn the_tape_frontier_follows_segments_through_the_cache() {
+        let dir =
+            std::env::temp_dir().join(format!("galata-tower-frontier-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let cache = FrontierCache::default();
+        assert!(
+            tape_frontier(&dir, &cache).is_empty(),
+            "an empty tape has no frontier"
+        );
+
+        write_quotes(
+            &dir,
+            "2026-09-22",
+            1,
+            &[("hyperliquid", 1_000), ("rh-crypto", 2_000)],
+        );
+        let first = tape_frontier(&dir, &cache);
+        assert_eq!(first.get("hyperliquid"), Some(&1_000));
+        assert_eq!(first.get("rh-crypto"), Some(&2_000));
+
+        // A later segment moves its venue's edge; the quiet venue keeps its
+        // old one, found through the cache rather than a re-decode.
+        write_quotes(&dir, "2026-09-23", 2, &[("hyperliquid", 5_000)]);
+        let second = tape_frontier(&dir, &cache);
+        assert_eq!(second.get("hyperliquid"), Some(&5_000));
+        assert_eq!(second.get("rh-crypto"), Some(&2_000));
+    }
 
     fn minute(at: i64, o: i128, h: i128, l: i128, c: i128, v: i128) -> Minute {
         Minute {

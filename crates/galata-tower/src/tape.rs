@@ -55,16 +55,18 @@ macro_rules! column {
 
 // Re-export the public types from the sub-modules.
 #[allow(unused_imports)]
-pub use coverage::{Covered, DayCoverage, HourlyRows, Rates, DEFAULT_HOURS, rates, covered_days};
+pub use coverage::{Covered, DEFAULT_HOURS, DayCoverage, HourlyRows, Rates, covered_days, rates};
+pub(crate) use coverage::{DayWindows, covered_from, day_window};
+pub(crate) use gaps::gaps_by_day;
 #[allow(unused_imports)]
 pub use gaps::{Cause, Coverage, coverage, union_micros};
 #[allow(unused_imports)]
-pub use view::{View, DEFAULT_LIMIT, rows, view};
+pub use view::{DEFAULT_LIMIT, View, rows, view};
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use arrow::array::{Array, Int64Array, StringArray};
+use arrow::array::{Array, Int64Array, RecordBatch, StringArray};
 use galata_wire::Kind;
 use serde::Serialize;
 use utoipa::ToSchema;
@@ -147,6 +149,46 @@ pub enum TapeError {
 /// `sequence-is-per-venue` reproduced a durable row hidden behind another
 /// venue's numbering. A max or a min over venues would be a number the screen
 /// shows and nobody can act on, so the map is reported whole.
+/// The whole of time, for the reads that genuinely fold every row.
+pub(crate) const ALL_TIME: (i64, i64) = (i64::MIN + 1, i64::MAX);
+
+/// One tape dataset's rows inside a window, or none when it is unwritten.
+///
+/// The window reaches the reader, which prunes date partitions and row
+/// groups by it — a read of a day costs a day, not the history. `ALL_TIME`
+/// is for callers whose answer really is over every row.
+pub(crate) fn read_kind(
+    root: &Path,
+    kind: Kind,
+    ticker: Option<String>,
+    (from_micros, to_micros): (i64, i64),
+) -> Result<Vec<RecordBatch>, TapeError> {
+    let scope = format!("kind={}", kind.as_str());
+    let scopes = [scope.as_str()];
+    let unreadable = |error: &dyn std::fmt::Display| TapeError::Unreadable {
+        detail: error.to_string(),
+    };
+    // The reader refuses an unwritten scope with its own name for it, so the
+    // refusal IS the "has anything written?" answer — asking `unwritten`
+    // first only walked the whole kind a second time (28ms a second over
+    // 2,230 candle partitions, measured 2026-09-26; see `tape::bounds`).
+    let reader = match galata_datawatch::tape::reader::Reader::open(root, &scopes) {
+        Ok(reader) => reader,
+        Err(galata_datawatch::tape::reader::ReadError::NoFrontier { .. }) => {
+            return Ok(Vec::new());
+        }
+        Err(e) => return Err(unreadable(&e)),
+    };
+    reader
+        .view(galata_datawatch::tape::reader::Window {
+            kind,
+            from_micros,
+            to_micros,
+            ticker,
+        })
+        .map_err(|e| unreadable(&e))
+}
+
 pub type Bounds = BTreeMap<String, BTreeMap<String, i64>>;
 
 /// Every served kind's durable bound, for the kinds that have written anything.
@@ -243,9 +285,8 @@ pub fn instruments(root: &Path) -> Instruments {
         let scopes = [scope.as_str()];
         // A kind that has written nothing is silence, not a refusal: the
         // caller asked what the record holds, and *not this* is an answer.
-        if !galata_datawatch::tape::reader::unwritten(root, &scopes).is_empty() {
-            continue;
-        }
+        // `open` refuses an unwritten scope itself, so asking `unwritten`
+        // first only walked the whole kind a second time — see `bounds`.
         let Ok(reader) = galata_datawatch::tape::reader::Reader::open(root, &scopes) else {
             continue;
         };
@@ -275,23 +316,31 @@ pub fn instruments(root: &Path) -> Instruments {
             let (Some(venue), Some(ticker)) = (venue, ticker) else {
                 continue;
             };
+            // Folded on borrowed keys first: probing the global map built two
+            // owned strings per row, the dominant share of the 170ms fold,
+            // for keys a batch repeats tens of thousands of times.
+            let mut local: BTreeMap<(&str, &str), (i64, usize)> = BTreeMap::new();
             for i in 0..batch.num_rows() {
                 if venue.is_null(i) || ticker.is_null(i) {
                     continue;
                 }
-                let key = (
-                    venue.value(i).to_owned(),
-                    ticker.value(i).to_owned(),
-                    kind.as_str(),
-                );
                 // A row with no venue time still counts as a row: it arrived.
                 // It just cannot make the instrument look newer than it is.
                 let when = at.filter(|a| !a.is_null(i)).map(|a| a.value(i));
-                let entry = seen.entry(key).or_insert((i64::MIN, 0));
+                let entry = local
+                    .entry((venue.value(i), ticker.value(i)))
+                    .or_insert((i64::MIN, 0));
                 entry.1 += 1;
                 if let Some(when) = when {
                     entry.0 = entry.0.max(when);
                 }
+            }
+            for ((venue, ticker), (newest, rows)) in local {
+                let entry = seen
+                    .entry((venue.to_owned(), ticker.to_owned(), kind.as_str()))
+                    .or_insert((i64::MIN, 0));
+                entry.0 = entry.0.max(newest);
+                entry.1 += rows;
             }
         }
     }

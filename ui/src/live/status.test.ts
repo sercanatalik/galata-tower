@@ -9,6 +9,7 @@ import {
   isAReasonToResync,
   silenceReason,
   sinceArrival,
+  touchedBy,
   venueLag,
   whySilent,
 } from './status'
@@ -25,6 +26,7 @@ function state(over: Partial<LiveState>): LiveState {
     archive: {},
     archiveAt: null,
     resyncs: 0,
+    moved: 0,
     drops: 0,
     missed: 0,
     venues: new Map(),
@@ -232,6 +234,59 @@ describe('the counters that only a real stream had ever exercised', () => {
     let live = state({ connected: false, drops: 1 })
     for (let i = 0; i < 10; i += 1) live = { ...live, ...afterDisconnect(live) }
     expect(live.drops).toBe(1)
+  })
+})
+
+/**
+ * Which queries one tape move makes stale.
+ *
+ * The server sends TapeMoved per kind and venue so a browser that does not
+ * draw a kind does not pay for it; these cases are that promise, kept on the
+ * receiving end. Keys are spelled as openapi-react-query builds them:
+ * [method, path, init].
+ */
+describe('what one move touches', () => {
+  const quotes = { kind: 'quotes', venue: 'hyperliquid' }
+  const candles = { kind: 'candles', venue: 'hyperliquid' }
+
+  it('touches the routes that fold every kind, whatever moved', () => {
+    for (const path of ['/v1/board', '/v1/timeline', '/v1/instruments', '/v1/rates', '/v1/partitions']) {
+      expect(touchedBy(['get', path], quotes)).toBe(true)
+      expect(touchedBy(['get', path], candles)).toBe(true)
+    }
+  })
+
+  it("touches a kind's own tape rows, and no other kind's", () => {
+    const key = ['get', '/v1/tape/{kind}', { params: { path: { kind: 'quotes' }, query: { from: 0, to: 1 } } }]
+    expect(touchedBy(key, quotes)).toBe(true)
+    expect(touchedBy(key, candles)).toBe(false)
+  })
+
+  it('touches candles AND statistics — statistics read candles — for the moved venue only', () => {
+    const chart = ['get', '/v1/candles', { params: { query: { venue: 'hyperliquid', ticker: 'BTC', interval: '1m' } } }]
+    const stats = ['get', '/v1/statistics', { params: { query: { venue: 'hyperliquid', horizon: '30m' } } }]
+    expect(touchedBy(chart, candles)).toBe(true)
+    expect(touchedBy(stats, candles)).toBe(true)
+    // A quotes write is not a new bar.
+    expect(touchedBy(chart, quotes)).toBe(false)
+    // Another venue's bar is another venue's chart.
+    expect(touchedBy(chart, { kind: 'candles', venue: 'rh-crypto' })).toBe(false)
+    expect(touchedBy(stats, { kind: 'candles', venue: 'rh-crypto' })).toBe(false)
+  })
+
+  it('touches the gaps report only when gaps were written', () => {
+    const key = ['get', '/v1/gaps', { params: { query: { from: 0, to: 1 } } }]
+    expect(touchedBy(key, { kind: 'gaps', venue: 'hyperliquid' })).toBe(true)
+    expect(touchedBy(key, quotes)).toBe(false)
+  })
+
+  it('does NOT touch the latest prices — they follow the archive, not the tape', () => {
+    expect(touchedBy(['get', '/v1/latest'], quotes)).toBe(false)
+  })
+
+  it('does NOT touch the stores no TapeMoved names; their refresh is throttled elsewhere', () => {
+    expect(touchedBy(['get', '/v1/signals', { params: { query: { signal: 'spread' } } }], quotes)).toBe(false)
+    expect(touchedBy(['get', '/v1/portfolio', { params: { query: { venue: 'hyperliquid' } } }], quotes)).toBe(false)
   })
 })
 

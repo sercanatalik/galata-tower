@@ -4,7 +4,7 @@
 //! exists, that it wants compacting, and that some time is missing across the
 //! whole record are three different facts, and none of them is this one.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use arrow::array::{Array, Int64Array, StringArray};
@@ -78,17 +78,7 @@ pub fn covered_days(root: &Path) -> Covered {
     let mut gaps_by_day: BTreeMap<(String, String), Vec<(i64, i64)>> = BTreeMap::new();
     super::gaps::collect_gaps(root, &mut gaps_by_day);
 
-    // The extent each day's gaps account for, per venue — a stated absence is
-    // part of what the record accounts for, so it widens the window.
-    let mut gap_extent: BTreeMap<(String, String), (i64, i64)> = BTreeMap::new();
-    for (key, spans) in &gaps_by_day {
-        let first = spans.iter().map(|s| s.0).min().unwrap_or(0);
-        let last = spans.iter().map(|s| s.1).max().unwrap_or(0);
-        gap_extent.insert(key.clone(), (first, last));
-    }
-
-    // (venue, kind, day) -> (first, last, rows)
-    let mut windows: BTreeMap<(String, String, String), (i64, i64, usize)> = BTreeMap::new();
+    let mut windows = DayWindows::new();
     for kind in SERVED {
         // **Not `gaps` itself.** That dataset records absences; how much of the
         // bookkeeping is missing is a different question from how much of the
@@ -97,48 +87,80 @@ pub fn covered_days(root: &Path) -> Covered {
         if kind == Kind::Gaps {
             continue;
         }
-        let scope = format!("kind={}", kind.as_str());
-        let scopes = [scope.as_str()];
-        if !galata_datawatch::tape::reader::unwritten(root, &scopes).is_empty() {
-            continue;
-        }
-        let Ok(reader) = galata_datawatch::tape::reader::Reader::open(root, &scopes) else {
-            continue;
-        };
-        let Ok(batches) = reader.view(galata_datawatch::tape::reader::Window {
-            kind,
-            from_micros: i64::MIN + 1,
-            to_micros: i64::MAX,
-            ticker: None,
-        }) else {
+        // Through the one shared read: unwritten is an empty batch list,
+        // and a kind that will not read leaves its windows out, as before.
+        let Ok(batches) = super::read_kind(root, kind, None, super::ALL_TIME) else {
             continue;
         };
         for batch in &batches {
-            let venue = crate::column!(batch, "venue", StringArray, "Utf8");
-            let recv = crate::column!(batch, "recv_micros", Int64Array, "Int64");
-            let (Ok(venue), Ok(recv)) = (venue, recv) else {
-                continue;
-            };
-            for i in 0..batch.num_rows() {
-                if venue.is_null(i) || recv.is_null(i) {
-                    continue;
-                }
-                let at = recv.value(i);
-                let key = (
-                    venue.value(i).to_owned(),
-                    kind.as_str().to_owned(),
-                    galata_datawatch::date_of(at),
-                );
-                windows
-                    .entry(key)
-                    .and_modify(|w| {
-                        w.0 = w.0.min(at);
-                        w.1 = w.1.max(at);
-                        w.2 += 1;
-                    })
-                    .or_insert((at, at, 1));
-            }
+            day_window(kind, batch, &mut windows);
         }
+    }
+
+    covered_from(windows, gaps_by_day)
+}
+
+/// (venue, kind, day) -> (first, last, rows): each day's window as folded.
+pub(crate) type DayWindows = BTreeMap<(String, String, String), (i64, i64, usize)>;
+
+/// One batch's arrivals folded into each day's window — the per-batch half of
+/// [`covered_days`], shared with the board's single pass over the tape.
+pub(crate) fn day_window(kind: Kind, batch: &arrow::array::RecordBatch, windows: &mut DayWindows) {
+    let venue = crate::column!(batch, "venue", StringArray, "Utf8");
+    let recv = crate::column!(batch, "recv_micros", Int64Array, "Int64");
+    let (Ok(venue), Ok(recv)) = (venue, recv) else {
+        return;
+    };
+    // Folded on a borrowed venue and the euclidean day first: probing the
+    // global map built two owned strings and formatted a date per row, for
+    // keys a batch repeats tens of thousands of times.
+    let mut local: BTreeMap<(&str, i64), (i64, i64, usize)> = BTreeMap::new();
+    for i in 0..batch.num_rows() {
+        if venue.is_null(i) || recv.is_null(i) {
+            continue;
+        }
+        let at = recv.value(i);
+        local
+            .entry((venue.value(i), at.div_euclid(DAY_MICROS)))
+            .and_modify(|w| {
+                w.0 = w.0.min(at);
+                w.1 = w.1.max(at);
+                w.2 += 1;
+            })
+            .or_insert((at, at, 1));
+    }
+    for ((venue, _), (first, last, rows)) in local {
+        // `date_of` buckets by the same euclidean day, so any arrival of the
+        // bucket names its date; formatted once per (venue, day) per batch.
+        let key = (
+            venue.to_owned(),
+            kind.as_str().to_owned(),
+            galata_datawatch::date_of(first),
+        );
+        windows
+            .entry(key)
+            .and_modify(|w| {
+                w.0 = w.0.min(first);
+                w.1 = w.1.max(last);
+                w.2 += rows;
+            })
+            .or_insert((first, last, rows));
+    }
+}
+
+/// The day table, from the folded windows and the stated gaps — the
+/// post-fold half of [`covered_days`].
+pub(crate) fn covered_from(
+    mut windows: DayWindows,
+    gaps_by_day: BTreeMap<(String, String), Vec<(i64, i64)>>,
+) -> Covered {
+    // The extent each day's gaps account for, per venue — a stated absence is
+    // part of what the record accounts for, so it widens the window.
+    let mut gap_extent: BTreeMap<(String, String), (i64, i64)> = BTreeMap::new();
+    for (key, spans) in &gaps_by_day {
+        let first = spans.iter().map(|s| s.0).min().unwrap_or(0);
+        let last = spans.iter().map(|s| s.1).max().unwrap_or(0);
+        gap_extent.insert(key.clone(), (first, last));
     }
 
     // **A day the record accounts for entirely with gaps has no rows, and so
@@ -257,7 +279,9 @@ pub struct HourlyRows {
 /// Rows per hour, newest first.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct Rates {
-    /// How many hours were returned.
+    /// How many buckets the dates read held — at least what was returned.
+    /// The dates past the cap are not read, so this is not a total over the
+    /// whole record; `capped` says when there was more.
     pub hours: usize,
     /// Whether a cap applied — so a short answer and a capped one differ.
     pub capped: bool,
@@ -283,42 +307,73 @@ pub const DEFAULT_HOURS: usize = 200;
 pub fn rates(root: &Path, limit: usize) -> Rates {
     let mut counted: BTreeMap<(String, String, i64), usize> = BTreeMap::new();
 
+    // Every date any kind holds, walked newest first. The partitions are
+    // dated by `recv_micros` — the same clock the buckets count — so every
+    // bucket an older date can contribute is strictly older than any bucket
+    // already in hand: once `limit` buckets are counted, the older dates
+    // cannot make the cut and are not read. Counting through the reader's
+    // whole-of-time window instead decoded the record since capture began —
+    // 8,760+ hours after a year — to serve a few days of buckets.
+    let mut dates: BTreeSet<String> = BTreeSet::new();
     for kind in SERVED {
-        let scope = format!("kind={}", kind.as_str());
-        let scopes = [scope.as_str()];
-        if !galata_datawatch::tape::reader::unwritten(root, &scopes).is_empty() {
-            continue;
-        }
-        let Ok(reader) = galata_datawatch::tape::reader::Reader::open(root, &scopes) else {
+        let dir = root.join(format!("kind={}", kind.as_str()));
+        let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
-        let Ok(batches) = reader.view(galata_datawatch::tape::reader::Window {
-            kind,
-            from_micros: i64::MIN + 1,
-            to_micros: i64::MAX,
-            ticker: None,
-        }) else {
-            continue;
-        };
-        for batch in &batches {
-            let venue = crate::column!(batch, "venue", StringArray, "Utf8");
-            let recv = crate::column!(batch, "recv_micros", Int64Array, "Int64");
-            let (Ok(venue), Ok(recv)) = (venue, recv) else {
-                continue;
-            };
-            for i in 0..batch.num_rows() {
-                if venue.is_null(i) || recv.is_null(i) {
-                    continue;
-                }
-                let key = (
-                    venue.value(i).to_owned(),
-                    kind.as_str().to_owned(),
-                    hour_of(recv.value(i)),
-                );
-                *counted.entry(key).or_insert(0) += 1;
+        for entry in entries.filter_map(Result::ok) {
+            if let Some(date) = entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.strip_prefix("date="))
+            {
+                dates.insert(date.to_owned());
             }
         }
     }
+
+    let mut dates = dates.into_iter().rev();
+    for date in dates.by_ref() {
+        for kind in SERVED {
+            let partition = root
+                .join(format!("kind={}", kind.as_str()))
+                .join(format!("date={date}"));
+            for (_, path) in galata_segments::list_segments(&partition) {
+                // A segment that will not read is skipped, not fatal: the
+                // others still hold arrivals.
+                let Ok(batches) = galata_segments::read_segment(&path) else {
+                    continue;
+                };
+                for batch in &batches {
+                    let venue = crate::column!(batch, "venue", StringArray, "Utf8");
+                    let recv = crate::column!(batch, "recv_micros", Int64Array, "Int64");
+                    let (Ok(venue), Ok(recv)) = (venue, recv) else {
+                        continue;
+                    };
+                    // Counted on borrowed keys first; the owned strings are
+                    // built once per (venue, hour) a batch holds, not per row.
+                    let mut local: BTreeMap<(&str, i64), usize> = BTreeMap::new();
+                    for i in 0..batch.num_rows() {
+                        if venue.is_null(i) || recv.is_null(i) {
+                            continue;
+                        }
+                        *local
+                            .entry((venue.value(i), hour_of(recv.value(i))))
+                            .or_insert(0) += 1;
+                    }
+                    for ((venue, hour), rows) in local {
+                        *counted
+                            .entry((venue.to_owned(), kind.as_str().to_owned(), hour))
+                            .or_insert(0) += rows;
+                    }
+                }
+            }
+        }
+        if counted.len() >= limit {
+            break;
+        }
+    }
+    // Older dates left unread are hours left out, which is the cap applying.
+    let unread = dates.next().is_some();
 
     let total = counted.len();
     let mut buckets: Vec<HourlyRows> = counted
@@ -338,7 +393,7 @@ pub fn rates(root: &Path, limit: usize) -> Rates {
             .then(a.venue.cmp(&b.venue))
             .then(a.kind.cmp(&b.kind))
     });
-    let capped = buckets.len() > limit;
+    let capped = unread || buckets.len() > limit;
     buckets.truncate(limit);
 
     Rates {
@@ -484,5 +539,63 @@ mod tests {
     #[test]
     fn the_default_hour_cap_is_stated() {
         assert_eq!(DEFAULT_HOURS, 200);
+    }
+
+    /// One quotes segment under `root`, one arrival per row.
+    fn write_arrivals(root: &Path, date: &str, seq: u64, arrivals: &[i64]) {
+        use arrow::array::{Int64Array, RecordBatch, StringArray};
+        use std::sync::Arc;
+        let schema = Arc::new(arrow::datatypes::Schema::new(vec![
+            arrow::datatypes::Field::new("venue", arrow::datatypes::DataType::Utf8, false),
+            arrow::datatypes::Field::new("recv_micros", arrow::datatypes::DataType::Int64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from_iter_values(
+                    arrivals.iter().map(|_| "hyperliquid"),
+                )),
+                Arc::new(Int64Array::from(arrivals.to_vec())),
+            ],
+        )
+        .expect("the quote schema");
+        galata_segments::write_segment(
+            &root.join("kind=quotes").join(format!("date={date}")),
+            galata_segments::Cursor::Seq {
+                first: seq,
+                last: seq,
+            },
+            &batch,
+            galata_segments::Codec::Zstd,
+        )
+        .expect("the segment writes");
+    }
+
+    /// The walk reads dates newest first and stops once the cap is filled:
+    /// an older date's buckets are all older than a newer date's, so they
+    /// cannot make the cut and their partitions are not read.
+    #[test]
+    fn the_cap_stops_the_walk_at_the_newest_dates() {
+        let dir = std::env::temp_dir().join(format!("galata-tower-rates-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        write_arrivals(&dir, "1970-01-01", 1, &[HOUR_MICROS, HOUR_MICROS + 1]);
+        write_arrivals(&dir, "1970-01-02", 2, &[30 * HOUR_MICROS]);
+
+        let capped = rates(&dir, 1);
+        assert_eq!(capped.buckets.len(), 1, "the cap applies");
+        assert_eq!(
+            capped.buckets[0].hour_micros,
+            30 * HOUR_MICROS,
+            "and it keeps the newest hour"
+        );
+        assert!(capped.capped, "older dates were left unread");
+
+        let all = rates(&dir, 10);
+        assert_eq!(all.buckets.len(), 2, "room enough reads every date");
+        assert_eq!(all.hours, 2);
+        assert!(!all.capped, "nothing was left out");
+        assert_eq!(all.buckets[0].rows, 1);
+        assert_eq!(all.buckets[1].rows, 2, "two arrivals share the old hour");
     }
 }
