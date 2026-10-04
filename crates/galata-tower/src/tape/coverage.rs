@@ -78,17 +78,7 @@ pub fn covered_days(root: &Path) -> Covered {
     let mut gaps_by_day: BTreeMap<(String, String), Vec<(i64, i64)>> = BTreeMap::new();
     super::gaps::collect_gaps(root, &mut gaps_by_day);
 
-    // The extent each day's gaps account for, per venue — a stated absence is
-    // part of what the record accounts for, so it widens the window.
-    let mut gap_extent: BTreeMap<(String, String), (i64, i64)> = BTreeMap::new();
-    for (key, spans) in &gaps_by_day {
-        let first = spans.iter().map(|s| s.0).min().unwrap_or(0);
-        let last = spans.iter().map(|s| s.1).max().unwrap_or(0);
-        gap_extent.insert(key.clone(), (first, last));
-    }
-
-    // (venue, kind, day) -> (first, last, rows)
-    let mut windows: BTreeMap<(String, String, String), (i64, i64, usize)> = BTreeMap::new();
+    let mut windows = DayWindows::new();
     for kind in SERVED {
         // **Not `gaps` itself.** That dataset records absences; how much of the
         // bookkeeping is missing is a different question from how much of the
@@ -114,31 +104,62 @@ pub fn covered_days(root: &Path) -> Covered {
             continue;
         };
         for batch in &batches {
-            let venue = crate::column!(batch, "venue", StringArray, "Utf8");
-            let recv = crate::column!(batch, "recv_micros", Int64Array, "Int64");
-            let (Ok(venue), Ok(recv)) = (venue, recv) else {
-                continue;
-            };
-            for i in 0..batch.num_rows() {
-                if venue.is_null(i) || recv.is_null(i) {
-                    continue;
-                }
-                let at = recv.value(i);
-                let key = (
-                    venue.value(i).to_owned(),
-                    kind.as_str().to_owned(),
-                    galata_datawatch::date_of(at),
-                );
-                windows
-                    .entry(key)
-                    .and_modify(|w| {
-                        w.0 = w.0.min(at);
-                        w.1 = w.1.max(at);
-                        w.2 += 1;
-                    })
-                    .or_insert((at, at, 1));
-            }
+            day_window(kind, batch, &mut windows);
         }
+    }
+
+    covered_from(windows, gaps_by_day)
+}
+
+/// (venue, kind, day) -> (first, last, rows): each day's window as folded.
+pub(crate) type DayWindows = BTreeMap<(String, String, String), (i64, i64, usize)>;
+
+/// One batch's arrivals folded into each day's window — the per-batch half of
+/// [`covered_days`], shared with the board's single pass over the tape.
+pub(crate) fn day_window(
+    kind: Kind,
+    batch: &arrow::array::RecordBatch,
+    windows: &mut DayWindows,
+) {
+    let venue = crate::column!(batch, "venue", StringArray, "Utf8");
+    let recv = crate::column!(batch, "recv_micros", Int64Array, "Int64");
+    let (Ok(venue), Ok(recv)) = (venue, recv) else {
+        return;
+    };
+    for i in 0..batch.num_rows() {
+        if venue.is_null(i) || recv.is_null(i) {
+            continue;
+        }
+        let at = recv.value(i);
+        let key = (
+            venue.value(i).to_owned(),
+            kind.as_str().to_owned(),
+            galata_datawatch::date_of(at),
+        );
+        windows
+            .entry(key)
+            .and_modify(|w| {
+                w.0 = w.0.min(at);
+                w.1 = w.1.max(at);
+                w.2 += 1;
+            })
+            .or_insert((at, at, 1));
+    }
+}
+
+/// The day table, from the folded windows and the stated gaps — the
+/// post-fold half of [`covered_days`].
+pub(crate) fn covered_from(
+    mut windows: DayWindows,
+    gaps_by_day: BTreeMap<(String, String), Vec<(i64, i64)>>,
+) -> Covered {
+    // The extent each day's gaps account for, per venue — a stated absence is
+    // part of what the record accounts for, so it widens the window.
+    let mut gap_extent: BTreeMap<(String, String), (i64, i64)> = BTreeMap::new();
+    for (key, spans) in &gaps_by_day {
+        let first = spans.iter().map(|s| s.0).min().unwrap_or(0);
+        let last = spans.iter().map(|s| s.1).max().unwrap_or(0);
+        gap_extent.insert(key.clone(), (first, last));
     }
 
     // **A day the record accounts for entirely with gaps has no rows, and so

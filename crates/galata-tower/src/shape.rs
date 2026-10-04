@@ -693,23 +693,60 @@ pub struct Datasets {
 }
 
 /// The Overview's grid.
+///
+/// **One pass over each kind.** The grid needs row counts, day coverage and
+/// gap figures, which were three separate folds, each decoding the tape from
+/// scratch — and the gaps a third time besides, so one GET paid for the
+/// record two-to-three times over, once a second per open browser. The folds
+/// are unchanged; they now share the one decode.
 pub fn board(tape_root: &Path, archive_root: &Path, today: &str) -> Result<Datasets, TapeError> {
-    let held = tape::instruments(tape_root);
     let mut rows: BTreeMap<(String, String), usize> = BTreeMap::new();
-    for i in &held.instruments {
-        *rows.entry((i.venue.clone(), i.kind.clone())).or_default() += i.rows;
-    }
     let mut gap_rows: BTreeMap<(String, String), usize> = BTreeMap::new();
-    for batch in &read_kind(tape_root, Kind::Gaps, None)? {
-        let venue = text(batch, "venue")?;
-        let series = text(batch, "series")?;
-        for i in 0..batch.num_rows() {
-            *gap_rows
-                .entry((venue.value(i).to_owned(), series.value(i).to_owned()))
-                .or_default() += 1;
+    let mut windows = tape::DayWindows::new();
+    let mut gaps_by_day: BTreeMap<(String, String), Vec<(i64, i64)>> = BTreeMap::new();
+
+    for kind in tape::SERVED {
+        let batches = if kind == Kind::Gaps {
+            // The grid's gap figures are part of its answer, so a gaps tape
+            // that will not read is an error here, as it always was.
+            read_kind(tape_root, kind, None)?
+        } else {
+            // A kind that will not read leaves its cells out, as the
+            // separate folds did.
+            match read_kind(tape_root, kind, None) {
+                Ok(batches) => batches,
+                Err(_) => continue,
+            }
+        };
+        for batch in &batches {
+            // Rows counted as `tape::instruments` counts them: a row stands
+            // behind an instrument when venue and ticker are both there.
+            if let (Ok(venue), Ok(ticker)) = (text(batch, "venue"), text(batch, "ticker")) {
+                for i in 0..batch.num_rows() {
+                    if venue.is_null(i) || ticker.is_null(i) {
+                        continue;
+                    }
+                    *rows
+                        .entry((venue.value(i).to_owned(), kind.as_str().to_owned()))
+                        .or_default() += 1;
+                }
+            }
+            if kind == Kind::Gaps {
+                let venue = text(batch, "venue")?;
+                let series = text(batch, "series")?;
+                for i in 0..batch.num_rows() {
+                    *gap_rows
+                        .entry((venue.value(i).to_owned(), series.value(i).to_owned()))
+                        .or_default() += 1;
+                }
+                tape::gaps_by_day(batch, &mut gaps_by_day);
+            } else {
+                tape::day_window(kind, batch, &mut windows);
+            }
         }
     }
-    let covered = tape::covered_days(tape_root);
+
+    let covered = tape::covered_from(windows, gaps_by_day);
     let archive = archive_segments_on(archive_root, today);
     let venues: BTreeSet<String> = rows.keys().map(|(v, _)| v.clone()).collect();
 

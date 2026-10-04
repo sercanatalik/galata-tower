@@ -247,21 +247,30 @@ pub(crate) fn collect_gaps(root: &Path, out: &mut BTreeMap<(String, String), Vec
         return;
     };
     for batch in &batches {
-        let venue = crate::column!(batch, "venue", StringArray, "Utf8");
-        let from = crate::column!(batch, "from_micros", Int64Array, "Int64");
-        let to = crate::column!(batch, "to_micros", Int64Array, "Int64");
-        let (Ok(venue), Ok(from), Ok(to)) = (venue, from, to) else {
+        gaps_by_day(batch, out);
+    }
+}
+
+/// One gaps batch bucketed by day — the per-batch half of [`collect_gaps`],
+/// shared with the board's single pass over the tape.
+pub(crate) fn gaps_by_day(
+    batch: &arrow::array::RecordBatch,
+    out: &mut BTreeMap<(String, String), Vec<(i64, i64)>>,
+) {
+    let venue = crate::column!(batch, "venue", StringArray, "Utf8");
+    let from = crate::column!(batch, "from_micros", Int64Array, "Int64");
+    let to = crate::column!(batch, "to_micros", Int64Array, "Int64");
+    let (Ok(venue), Ok(from), Ok(to)) = (venue, from, to) else {
+        return;
+    };
+    for i in 0..batch.num_rows() {
+        if venue.is_null(i) || from.is_null(i) || to.is_null(i) {
             continue;
-        };
-        for i in 0..batch.num_rows() {
-            if venue.is_null(i) || from.is_null(i) || to.is_null(i) {
-                continue;
-            }
-            for (date, span) in super::coverage::split_by_day(from.value(i), to.value(i)) {
-                out.entry((venue.value(i).to_owned(), date))
-                    .or_default()
-                    .push(span);
-            }
+        }
+        for (date, span) in super::coverage::split_by_day(from.value(i), to.value(i)) {
+            out.entry((venue.value(i).to_owned(), date))
+                .or_default()
+                .push(span);
         }
     }
 }

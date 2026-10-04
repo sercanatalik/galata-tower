@@ -56,8 +56,10 @@ macro_rules! column {
 // Re-export the public types from the sub-modules.
 #[allow(unused_imports)]
 pub use coverage::{Covered, DayCoverage, HourlyRows, Rates, DEFAULT_HOURS, rates, covered_days};
+pub(crate) use coverage::{DayWindows, covered_from, day_window};
 #[allow(unused_imports)]
 pub use gaps::{Cause, Coverage, coverage, union_micros};
+pub(crate) use gaps::gaps_by_day;
 #[allow(unused_imports)]
 pub use view::{View, DEFAULT_LIMIT, rows, view};
 
