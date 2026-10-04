@@ -38,7 +38,7 @@ TYPES="$ROOT/ui/src/contract/api.d.ts"
 case "$VERB" in
     targets)
         echo "openapi.snapshot.json"
-        echo "crates/galata-tower/src/main.rs"
+        echo "crates/galata-tower/src/routes/about.rs"
         ;;
     plant)
         # The contract changed and the snapshot was not refreshed.
@@ -48,7 +48,7 @@ case "$VERB" in
         # until its initializer is updated too, so the guard would fail with a
         # build error and prove nothing about drift. A plant must fail the
         # guard for the guard's own reason.
-        python3 - "$ROOT/crates/galata-tower/src/main.rs" <<'PLANTPY'
+        python3 - "$ROOT/crates/galata-tower/src/routes/about.rs" <<'PLANTPY'
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
@@ -56,7 +56,7 @@ marker = 'description = "The archive root and the tape\'s prune columns"'
 assert marker in text, "the plant's target moved -- the PLANT is wrong, not the guard"
 path.write_text(text.replace(marker, 'description = "planted by check-contract-drift.sh"', 1))
 PLANTPY
-        echo "planted in crates/galata-tower/src/main.rs" >&2
+        echo "planted in crates/galata-tower/src/routes/about.rs" >&2
         ;;
     check|write)
         cd "$ROOT"
