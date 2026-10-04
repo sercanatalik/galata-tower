@@ -160,11 +160,19 @@ fn levels(dir: &Path, prefix: &str) -> Vec<(String, PathBuf)> {
     out
 }
 
-/// Every row of one tape dataset, or none when the dataset is unwritten.
+/// The whole of time, for the reads that genuinely fold every row.
+const ALL_TIME: (i64, i64) = (i64::MIN + 1, i64::MAX);
+
+/// One tape dataset's rows inside a window, or none when it is unwritten.
+///
+/// The window reaches the reader, which prunes date partitions and row
+/// groups by it — a read of a day costs a day, not the history. `ALL_TIME`
+/// is for callers whose answer really is over every row.
 fn read_kind(
     root: &Path,
     kind: Kind,
     ticker: Option<String>,
+    (from_micros, to_micros): (i64, i64),
 ) -> Result<Vec<RecordBatch>, TapeError> {
     let scope = format!("kind={}", kind.as_str());
     let scopes = [scope.as_str()];
@@ -179,8 +187,8 @@ fn read_kind(
     reader
         .view(galata_datawatch::tape::reader::Window {
             kind,
-            from_micros: i64::MIN + 1,
-            to_micros: i64::MAX,
+            from_micros,
+            to_micros,
             ticker,
         })
         .map_err(|e| unreadable(&e))
@@ -335,7 +343,7 @@ pub fn timeline(tape_root: &Path, archive_root: &Path) -> Result<Timeline, TapeE
         if kind == Kind::Gaps {
             continue;
         }
-        for batch in &read_kind(tape_root, kind, None)? {
+        for batch in &read_kind(tape_root, kind, None, ALL_TIME)? {
             let venue = text(batch, "venue")?;
             let recv = int(batch, "recv_micros")?;
             let at = int(batch, "at_micros").ok();
@@ -356,7 +364,7 @@ pub fn timeline(tape_root: &Path, archive_root: &Path) -> Result<Timeline, TapeE
     }
 
     let mut gaps: BTreeMap<(String, String), BTreeMap<String, Vec<Span>>> = BTreeMap::new();
-    for batch in &read_kind(tape_root, Kind::Gaps, None)? {
+    for batch in &read_kind(tape_root, Kind::Gaps, None, ALL_TIME)? {
         let venue = text(batch, "venue")?;
         let series = text(batch, "series")?;
         let cause = text(batch, "cause")?;
@@ -531,7 +539,11 @@ pub fn candles(
     }
     let mut folded: BTreeMap<i64, Minute> = BTreeMap::new();
     let mut scale: i8 = 18;
-    for batch in &read_kind(root, Kind::Candles, Some(ticker.to_owned()))? {
+    // The window goes to the reader: a chart of the last day decodes the
+    // last day's partitions, not the instrument's whole history. The per-row
+    // guard below still stands — it also covers rows with no venue time,
+    // which the reader keeps whatever the window.
+    for batch in &read_kind(root, Kind::Candles, Some(ticker.to_owned()), (from, to))? {
         let v = text(batch, "venue")?;
         let t = text(batch, "ticker")?;
         let at = int(batch, "at_micros")?;
@@ -709,11 +721,11 @@ pub fn board(tape_root: &Path, archive_root: &Path, today: &str) -> Result<Datas
         let batches = if kind == Kind::Gaps {
             // The grid's gap figures are part of its answer, so a gaps tape
             // that will not read is an error here, as it always was.
-            read_kind(tape_root, kind, None)?
+            read_kind(tape_root, kind, None, ALL_TIME)?
         } else {
             // A kind that will not read leaves its cells out, as the
             // separate folds did.
-            match read_kind(tape_root, kind, None) {
+            match read_kind(tape_root, kind, None, ALL_TIME) {
                 Ok(batches) => batches,
                 Err(_) => continue,
             }
