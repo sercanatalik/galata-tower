@@ -347,18 +347,32 @@ pub fn timeline(tape_root: &Path, archive_root: &Path) -> Result<Timeline, TapeE
             let venue = text(batch, "venue")?;
             let recv = int(batch, "recv_micros")?;
             let at = int(batch, "at_micros").ok();
+            // Folded on the borrowed venue first: the global probe built the
+            // (venue, kind) key twice per row. `runs` sorts what it is
+            // handed, so regrouping by venue loses nothing.
+            let mut held_here: BTreeMap<&str, Vec<i64>> = BTreeMap::new();
+            let mut late_here: BTreeMap<&str, Vec<i64>> = BTreeMap::new();
             for i in 0..batch.num_rows() {
                 if venue.is_null(i) || recv.is_null(i) {
                     continue;
                 }
-                let key = (venue.value(i).to_owned(), kind.as_str().to_owned());
                 let r = recv.value(i);
-                held.entry(key.clone()).or_default().push(r);
+                held_here.entry(venue.value(i)).or_default().push(r);
                 if let Some(at) = at.filter(|a| !a.is_null(i))
                     && r - at.value(i) > BACKFILL_AFTER_MICROS
                 {
-                    late.entry(key).or_default().push(at.value(i));
+                    late_here.entry(venue.value(i)).or_default().push(at.value(i));
                 }
+            }
+            for (venue, arrivals) in held_here {
+                held.entry((venue.to_owned(), kind.as_str().to_owned()))
+                    .or_default()
+                    .extend(arrivals);
+            }
+            for (venue, ats) in late_here {
+                late.entry((venue.to_owned(), kind.as_str().to_owned()))
+                    .or_default()
+                    .extend(ats);
             }
         }
     }
@@ -370,15 +384,22 @@ pub fn timeline(tape_root: &Path, archive_root: &Path) -> Result<Timeline, TapeE
         let cause = text(batch, "cause")?;
         let from = int(batch, "from_micros")?;
         let to = int(batch, "to_micros")?;
+        // On borrowed keys first, as above; `merge` sorts the spans later.
+        let mut here: BTreeMap<(&str, &str, &str), Vec<Span>> = BTreeMap::new();
         for i in 0..batch.num_rows() {
-            gaps.entry((venue.value(i).to_owned(), series.value(i).to_owned()))
-                .or_default()
-                .entry(cause.value(i).to_owned())
+            here.entry((venue.value(i), series.value(i), cause.value(i)))
                 .or_default()
                 .push(Span {
                     from: from.value(i),
                     to: to.value(i),
                 });
+        }
+        for ((venue, series, cause), spans) in here {
+            gaps.entry((venue.to_owned(), series.to_owned()))
+                .or_default()
+                .entry(cause.to_owned())
+                .or_default()
+                .extend(spans);
         }
     }
 

@@ -277,23 +277,31 @@ pub fn instruments(root: &Path) -> Instruments {
             let (Some(venue), Some(ticker)) = (venue, ticker) else {
                 continue;
             };
+            // Folded on borrowed keys first: probing the global map built two
+            // owned strings per row, the dominant share of the 170ms fold,
+            // for keys a batch repeats tens of thousands of times.
+            let mut local: BTreeMap<(&str, &str), (i64, usize)> = BTreeMap::new();
             for i in 0..batch.num_rows() {
                 if venue.is_null(i) || ticker.is_null(i) {
                     continue;
                 }
-                let key = (
-                    venue.value(i).to_owned(),
-                    ticker.value(i).to_owned(),
-                    kind.as_str(),
-                );
                 // A row with no venue time still counts as a row: it arrived.
                 // It just cannot make the instrument look newer than it is.
                 let when = at.filter(|a| !a.is_null(i)).map(|a| a.value(i));
-                let entry = seen.entry(key).or_insert((i64::MIN, 0));
+                let entry = local
+                    .entry((venue.value(i), ticker.value(i)))
+                    .or_insert((i64::MIN, 0));
                 entry.1 += 1;
                 if let Some(when) = when {
                     entry.0 = entry.0.max(when);
                 }
+            }
+            for ((venue, ticker), (newest, rows)) in local {
+                let entry = seen
+                    .entry((venue.to_owned(), ticker.to_owned(), kind.as_str()))
+                    .or_insert((i64::MIN, 0));
+                entry.0 = entry.0.max(newest);
+                entry.1 += rows;
             }
         }
     }

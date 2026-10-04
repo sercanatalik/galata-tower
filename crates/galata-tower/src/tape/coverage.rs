@@ -126,24 +126,40 @@ pub(crate) fn day_window(
     let (Ok(venue), Ok(recv)) = (venue, recv) else {
         return;
     };
+    // Folded on a borrowed venue and the euclidean day first: probing the
+    // global map built two owned strings and formatted a date per row, for
+    // keys a batch repeats tens of thousands of times.
+    let mut local: BTreeMap<(&str, i64), (i64, i64, usize)> = BTreeMap::new();
     for i in 0..batch.num_rows() {
         if venue.is_null(i) || recv.is_null(i) {
             continue;
         }
         let at = recv.value(i);
-        let key = (
-            venue.value(i).to_owned(),
-            kind.as_str().to_owned(),
-            galata_datawatch::date_of(at),
-        );
-        windows
-            .entry(key)
+        local
+            .entry((venue.value(i), at.div_euclid(DAY_MICROS)))
             .and_modify(|w| {
                 w.0 = w.0.min(at);
                 w.1 = w.1.max(at);
                 w.2 += 1;
             })
             .or_insert((at, at, 1));
+    }
+    for ((venue, _), (first, last, rows)) in local {
+        // `date_of` buckets by the same euclidean day, so any arrival of the
+        // bucket names its date; formatted once per (venue, day) per batch.
+        let key = (
+            venue.to_owned(),
+            kind.as_str().to_owned(),
+            galata_datawatch::date_of(first),
+        );
+        windows
+            .entry(key)
+            .and_modify(|w| {
+                w.0 = w.0.min(first);
+                w.1 = w.1.max(last);
+                w.2 += rows;
+            })
+            .or_insert((first, last, rows));
     }
 }
 
@@ -327,16 +343,21 @@ pub fn rates(root: &Path, limit: usize) -> Rates {
             let (Ok(venue), Ok(recv)) = (venue, recv) else {
                 continue;
             };
+            // Counted on borrowed keys first; the owned strings are built
+            // once per (venue, hour) a batch holds, not once per row.
+            let mut local: BTreeMap<(&str, i64), usize> = BTreeMap::new();
             for i in 0..batch.num_rows() {
                 if venue.is_null(i) || recv.is_null(i) {
                     continue;
                 }
-                let key = (
-                    venue.value(i).to_owned(),
-                    kind.as_str().to_owned(),
-                    hour_of(recv.value(i)),
-                );
-                *counted.entry(key).or_insert(0) += 1;
+                *local
+                    .entry((venue.value(i), hour_of(recv.value(i))))
+                    .or_insert(0) += 1;
+            }
+            for ((venue, hour), rows) in local {
+                *counted
+                    .entry((venue.to_owned(), kind.as_str().to_owned(), hour))
+                    .or_insert(0) += rows;
             }
         }
     }
