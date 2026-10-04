@@ -99,7 +99,7 @@ pub(crate) struct Tower {
 }
 
 /// The cached partition listing, with the stamps it is valid for.
-pub(crate) type Listing = std::sync::Mutex<Option<(Stamp, Vec<PathBuf>)>>;
+pub(crate) type Listing = std::sync::Mutex<Option<(Stamp, Arc<Vec<PathBuf>>)>>;
 
 /// Modification times of the root, `venue=` and `kind=` directories: they change when a partition appears or goes.
 pub(crate) type Stamp = Vec<(PathBuf, Option<SystemTime>)>;
@@ -371,16 +371,26 @@ fn mime_guess_for(path: &str) -> &'static str {
 }
 
 /// The partition listing, walked again only when a partition directory may have appeared or gone.
-pub(crate) fn cached_partitions(root: &std::path::Path, listing: &Listing) -> Vec<PathBuf> {
+///
+/// The lock is held to read and to store, never across the walk: a second
+/// request arriving during a cold walk takes its own walk on its own
+/// blocking thread instead of queueing behind the first for the whole
+/// filesystem pass. And a hit hands out the one shared Arc — owning the
+/// result deep-copied every path of the listing on every request.
+pub(crate) fn cached_partitions(root: &std::path::Path, listing: &Listing) -> Arc<Vec<PathBuf>> {
     let stamp = stamp_of(root);
-    let mut held = listing.lock().unwrap_or_else(|p| p.into_inner());
-    if let Some((seen, found)) = held.as_ref()
-        && *seen == stamp
     {
-        return found.clone();
+        let held = listing.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some((seen, found)) = held.as_ref()
+            && *seen == stamp
+        {
+            return Arc::clone(found);
+        }
     }
-    let found = galata_segments::partitions(root);
-    *held = Some((stamp, found.clone()));
+    let found = Arc::new(galata_segments::partitions(root));
+    // Racing walks each store the stamp they walked under; whichever lands
+    // last is a true pairing, and a stale one re-walks on its next miss.
+    *listing.lock().unwrap_or_else(|p| p.into_inner()) = Some((stamp, Arc::clone(&found)));
     found
 }
 

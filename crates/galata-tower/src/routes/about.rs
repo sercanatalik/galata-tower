@@ -71,11 +71,14 @@ pub(crate) async fn partitions(State(tower): State<Tower>) -> Response {
     let listing = std::sync::Arc::clone(&tower.listing);
     let walked = tokio::task::spawn_blocking(move || {
         std::fs::read_dir(&root)?;
+        // Borrowed from the shared listing: the response needs each
+        // partition's relative spelling, not a copy of its path.
         let found = crate::cached_partitions(&root, &listing)
-            .into_iter()
+            .iter()
             .map(|dir| {
-                let segments = galata_segments::list_segments(&dir).len();
-                (dir, segments)
+                let segments = galata_segments::list_segments(dir).len();
+                let path = dir.strip_prefix(&root).unwrap_or(dir).display().to_string();
+                (path, segments)
             })
             .collect::<Vec<_>>();
         Ok::<_, std::io::Error>(found)
@@ -89,14 +92,7 @@ pub(crate) async fn partitions(State(tower): State<Tower>) -> Response {
     Json(
         found
             .into_iter()
-            .map(|(path, segments)| Partition {
-                path: path
-                    .strip_prefix(&tower.archive)
-                    .unwrap_or(&path)
-                    .display()
-                    .to_string(),
-                segments,
-            })
+            .map(|(path, segments)| Partition { path, segments })
             .collect::<Vec<_>>(),
     )
     .into_response()
