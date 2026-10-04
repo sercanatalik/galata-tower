@@ -347,14 +347,25 @@ impl Root {
 /// The screen, or its index for any path the client routes itself.
 async fn screen(uri: axum::http::Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
-    let file = Screen::get(path).or_else(|| Screen::get("index.html"));
-    match file {
-        Some(content) => {
-            let mime = mime_guess_for(path);
-            ([(header::CONTENT_TYPE, mime)], content.data.into_owned()).into_response()
-        }
-        None => (StatusCode::NOT_FOUND, "no screen is embedded in this build").into_response(),
-    }
+    // The mime is the FILE SERVED, not the path asked for. A browser holding
+    // a stale hashed asset path after a redeploy misses and falls back to
+    // the index; index.html labelled text/javascript is executed as a
+    // script and dies with an opaque syntax error, where text/html reloads
+    // the screen.
+    let (served, file) = match Screen::get(path) {
+        Some(file) => (path, file),
+        None => match Screen::get("index.html") {
+            Some(file) => ("index.html", file),
+            None => {
+                return (StatusCode::NOT_FOUND, "no screen is embedded in this build")
+                    .into_response();
+            }
+        },
+    };
+    // The Cow as rust-embed hands it: borrowed &'static bytes in release,
+    // where `into_owned()` copied the whole asset — the JS bundle, the
+    // 70KB font — once per request.
+    ([(header::CONTENT_TYPE, mime_guess_for(served))], file.data).into_response()
 }
 
 /// Enough of a type table for what a built screen actually contains.
@@ -453,10 +464,21 @@ pub(crate) fn board_event(
     // during an outage used to be handed an empty list and nothing else, and
     // rendered "no venue has published status yet" — false, reassuring, and
     // worth an afternoon of looking in the wrong place.
-    let frame = Board {
+    //
+    // Serialized from references: cloning every venue's snapshot — each a
+    // multi-kilobyte JSON body — per connecting browser and per lag
+    // recovery copied the whole board only to serialize and drop it.
+    // [`Board`] stays the contract's lifetime-free statement of this shape.
+    #[derive(Serialize)]
+    struct Frame<'a> {
+        broker: BrokerState,
+        bounds: tape::Bounds,
+        venues: Vec<&'a Snapshot>,
+    }
+    let frame = Frame {
         broker,
         bounds,
-        venues: board.values().map(|s| (**s).clone()).collect(),
+        venues: board.values().map(|s| &**s).collect(),
     };
     axum::response::sse::Event::default()
         .event("board")

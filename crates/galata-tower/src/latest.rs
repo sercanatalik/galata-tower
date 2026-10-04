@@ -153,6 +153,18 @@ pub struct Latest {
     pub refusals: Vec<String>,
 }
 
+/// The shared answer as a response body: serialized through the Arc.
+///
+/// The route used to `(*arc).clone()` — copying every venue's price strings
+/// per request, which defeated the Arc that [`Shared`] exists to hand out.
+pub struct SharedLatest(pub Arc<Latest>);
+
+impl Serialize for SharedLatest {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
 /// An answer shared by every browser for a second.
 #[derive(Default)]
 pub struct Shared(Mutex<Option<(Instant, Arc<Latest>)>>);
@@ -181,18 +193,42 @@ pub fn latest(archive: &Path, frontier: &Frontier, normalisers: &Normalisers) ->
             refusals.push(format!("the archive holds nothing for {name}"));
             continue;
         };
+        let micros = |w: Duration| i64::try_from(w.as_micros()).unwrap_or(i64::MAX);
         let mut window = FIRST_WINDOW;
-        let prices = loop {
-            let prices = read_window(archive, name, venue, edge, window);
+        let mut prices = BTreeMap::new();
+        fold_window(
+            archive,
+            name,
+            venue,
+            edge - micros(window),
+            edge + 1,
+            &mut prices,
+        );
+        // Widened by reading ONLY the extension. Each doubling used to
+        // replay the whole wider range from scratch — 120+240+480+900
+        // seconds of payloads to cover 900 — re-normalising everything the
+        // narrower read had already folded. The extension cannot displace
+        // what is held: the fold keeps the later receipt, and every payload
+        // in `[edge - wider, edge - window)` is older than any already read.
+        loop {
             let complete = venue
                 .tickers
                 .iter()
                 .all(|t| prices.get(t).is_some_and(|p| p.bid.is_some()));
             if complete || window >= WIDEST_WINDOW {
-                break prices;
+                break;
             }
-            window = (window * 2).min(WIDEST_WINDOW);
-        };
+            let wider = (window * 2).min(WIDEST_WINDOW);
+            fold_window(
+                archive,
+                name,
+                venue,
+                edge - micros(wider),
+                edge - micros(window),
+                &mut prices,
+            );
+            window = wider;
+        }
         venues.push(VenuePrices {
             venue: name.clone(),
             frontier_micros: edge,
@@ -212,23 +248,25 @@ pub fn latest(archive: &Path, frontier: &Frontier, normalisers: &Normalisers) ->
     Latest { venues, refusals }
 }
 
-/// The newest quote and trade per ticker in `[edge - window, edge]`.
-fn read_window(
+/// The newest quote and trade per ticker in `[from, to)`, folded into `out`.
+///
+/// A range that will not read leaves `out` as it was: what a narrower read
+/// already found still stands.
+fn fold_window(
     archive: &Path,
     name: &str,
     venue: &Venue,
-    edge: i64,
-    window: Duration,
-) -> BTreeMap<String, Price> {
+    from: i64,
+    to: i64,
+    out: &mut BTreeMap<String, Price>,
+) {
     let quotes = format!("venue={name}/kind=quotes");
     let trades = format!("venue={name}/kind=trades");
     let scopes = [quotes.as_str(), trades.as_str()];
-    let from = edge - window.as_micros() as i64;
-    let Ok(payloads) = galata_datawatch::replay::read_range(archive, Some(&scopes), from, edge + 1)
+    let Ok(payloads) = galata_datawatch::replay::read_range(archive, Some(&scopes), from, to)
     else {
-        return BTreeMap::new();
+        return;
     };
-    let mut out: BTreeMap<String, Price> = BTreeMap::new();
     for replayed in &payloads {
         let Ok(envelopes) = venue.adapter.normalise(replayed.payload()) else {
             continue;
@@ -260,5 +298,4 @@ fn read_window(
             }
         }
     }
-    out
 }

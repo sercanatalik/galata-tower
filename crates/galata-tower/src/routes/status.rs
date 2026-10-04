@@ -61,8 +61,9 @@ pub(crate) async fn latest_prices(State(tower): State<Tower>) -> Response {
         std::sync::Arc::clone(&tower.latest),
     );
     blocking_json_infallible(move || {
-        (*shared.get(|| crate::latest::latest(&archive, &frontier, &normalisers))).clone()
+        crate::latest::SharedLatest(
+            shared.get(|| crate::latest::latest(&archive, &frontier, &normalisers)),
+        )
     })
     .await
-    .map(|response| response)
 }

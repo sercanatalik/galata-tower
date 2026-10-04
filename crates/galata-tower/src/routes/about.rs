@@ -35,16 +35,27 @@ pub(crate) const COMPACTED_TO: usize = 1;
 )]
 pub(crate) async fn about(State(tower): State<Tower>) -> Response {
     let (tape, cache) = (tower.tape.clone(), std::sync::Arc::clone(&tower.layout));
-    let tape_problems =
-        match tokio::task::spawn_blocking(move || layout::problems(&tape, &cache, layout::check))
-            .await
-        {
-            Ok(found) => found,
-            Err(join) => return unfinished(join),
-        };
+    let archive = tower.archive.clone();
+    // Root::of opens each root's directory, and that stays inside the
+    // blocking closure with the layout walk: against a hung disk those two
+    // read_dir calls on the runtime thread would stall every request
+    // scheduled on it — the exact failure layout.rs's header recounts.
+    let (tape_problems, archive_root, tape_root) = match tokio::task::spawn_blocking(move || {
+        let problems = layout::problems(&tape, &cache, layout::check);
+        (
+            problems,
+            Root::of(&archive, "GALATA_ARCHIVE"),
+            Root::of(&tape, "GALATA_TAPE"),
+        )
+    })
+    .await
+    {
+        Ok(found) => found,
+        Err(join) => return unfinished(join),
+    };
     Json(crate::About {
-        archive: Root::of(&tower.archive, "GALATA_ARCHIVE"),
-        tape: Root::of(&tower.tape, "GALATA_TAPE"),
+        archive: archive_root,
+        tape: tape_root,
         prune_on: galata_datawatch::tape::schema::PRUNE_ON
             .iter()
             .map(|column| (*column).to_owned())
