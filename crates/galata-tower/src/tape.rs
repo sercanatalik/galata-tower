@@ -66,7 +66,7 @@ pub use view::{DEFAULT_LIMIT, View, rows, view};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use arrow::array::{Array, Int64Array, StringArray};
+use arrow::array::{Array, Int64Array, RecordBatch, StringArray};
 use galata_wire::Kind;
 use serde::Serialize;
 use utoipa::ToSchema;
@@ -149,6 +149,46 @@ pub enum TapeError {
 /// `sequence-is-per-venue` reproduced a durable row hidden behind another
 /// venue's numbering. A max or a min over venues would be a number the screen
 /// shows and nobody can act on, so the map is reported whole.
+/// The whole of time, for the reads that genuinely fold every row.
+pub(crate) const ALL_TIME: (i64, i64) = (i64::MIN + 1, i64::MAX);
+
+/// One tape dataset's rows inside a window, or none when it is unwritten.
+///
+/// The window reaches the reader, which prunes date partitions and row
+/// groups by it — a read of a day costs a day, not the history. `ALL_TIME`
+/// is for callers whose answer really is over every row.
+pub(crate) fn read_kind(
+    root: &Path,
+    kind: Kind,
+    ticker: Option<String>,
+    (from_micros, to_micros): (i64, i64),
+) -> Result<Vec<RecordBatch>, TapeError> {
+    let scope = format!("kind={}", kind.as_str());
+    let scopes = [scope.as_str()];
+    let unreadable = |error: &dyn std::fmt::Display| TapeError::Unreadable {
+        detail: error.to_string(),
+    };
+    // The reader refuses an unwritten scope with its own name for it, so the
+    // refusal IS the "has anything written?" answer — asking `unwritten`
+    // first only walked the whole kind a second time (28ms a second over
+    // 2,230 candle partitions, measured 2026-09-26; see `tape::bounds`).
+    let reader = match galata_datawatch::tape::reader::Reader::open(root, &scopes) {
+        Ok(reader) => reader,
+        Err(galata_datawatch::tape::reader::ReadError::NoFrontier { .. }) => {
+            return Ok(Vec::new());
+        }
+        Err(e) => return Err(unreadable(&e)),
+    };
+    reader
+        .view(galata_datawatch::tape::reader::Window {
+            kind,
+            from_micros,
+            to_micros,
+            ticker,
+        })
+        .map_err(|e| unreadable(&e))
+}
+
 pub type Bounds = BTreeMap<String, BTreeMap<String, i64>>;
 
 /// Every served kind's durable bound, for the kinds that have written anything.

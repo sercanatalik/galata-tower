@@ -87,20 +87,9 @@ pub fn covered_days(root: &Path) -> Covered {
         if kind == Kind::Gaps {
             continue;
         }
-        let scope = format!("kind={}", kind.as_str());
-        let scopes = [scope.as_str()];
-        // Unwritten and unreadable both mean no windows from this kind, and
-        // `open` refuses an unwritten scope itself: asking `unwritten` first
-        // only walked the whole kind a second time.
-        let Ok(reader) = galata_datawatch::tape::reader::Reader::open(root, &scopes) else {
-            continue;
-        };
-        let Ok(batches) = reader.view(galata_datawatch::tape::reader::Window {
-            kind,
-            from_micros: i64::MIN + 1,
-            to_micros: i64::MAX,
-            ticker: None,
-        }) else {
+        // Through the one shared read: unwritten is an empty batch list,
+        // and a kind that will not read leaves its windows out, as before.
+        let Ok(batches) = super::read_kind(root, kind, None, super::ALL_TIME) else {
             continue;
         };
         for batch in &batches {

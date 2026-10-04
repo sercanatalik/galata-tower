@@ -13,7 +13,7 @@ use arrow::datatypes::DataType;
 use galata_wire::Kind;
 use serde::Serialize;
 
-use crate::tape::{self, TapeError};
+use crate::tape::{self, ALL_TIME, TapeError, read_kind};
 
 /// Two receipts further apart than this are two runs, not one.
 pub const RUN_BREAK_MICROS: i64 = 60_000_000;
@@ -158,46 +158,6 @@ fn levels(dir: &Path, prefix: &str) -> Vec<(String, PathBuf)> {
         .collect();
     out.sort();
     out
-}
-
-/// The whole of time, for the reads that genuinely fold every row.
-const ALL_TIME: (i64, i64) = (i64::MIN + 1, i64::MAX);
-
-/// One tape dataset's rows inside a window, or none when it is unwritten.
-///
-/// The window reaches the reader, which prunes date partitions and row
-/// groups by it — a read of a day costs a day, not the history. `ALL_TIME`
-/// is for callers whose answer really is over every row.
-fn read_kind(
-    root: &Path,
-    kind: Kind,
-    ticker: Option<String>,
-    (from_micros, to_micros): (i64, i64),
-) -> Result<Vec<RecordBatch>, TapeError> {
-    let scope = format!("kind={}", kind.as_str());
-    let scopes = [scope.as_str()];
-    let unreadable = |error: &dyn std::fmt::Display| TapeError::Unreadable {
-        detail: error.to_string(),
-    };
-    // The reader refuses an unwritten scope with its own name for it, so the
-    // refusal IS the "has anything written?" answer — asking `unwritten`
-    // first only walked the whole kind a second time (28ms a second over
-    // 2,230 candle partitions, measured 2026-09-26; see `tape::bounds`).
-    let reader = match galata_datawatch::tape::reader::Reader::open(root, &scopes) {
-        Ok(reader) => reader,
-        Err(galata_datawatch::tape::reader::ReadError::NoFrontier { .. }) => {
-            return Ok(Vec::new());
-        }
-        Err(e) => return Err(unreadable(&e)),
-    };
-    reader
-        .view(galata_datawatch::tape::reader::Window {
-            kind,
-            from_micros,
-            to_micros,
-            ticker,
-        })
-        .map_err(|e| unreadable(&e))
 }
 
 fn text<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a StringArray, TapeError> {

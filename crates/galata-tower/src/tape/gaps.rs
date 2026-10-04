@@ -234,20 +234,9 @@ pub fn coverage(root: &Path, from: i64, to: i64) -> Result<Coverage, TapeError> 
 /// **A gap across midnight is charged to both days**, clipped at the boundary,
 /// because it is missing from both.
 pub(crate) fn collect_gaps(root: &Path, out: &mut BTreeMap<(String, String), Vec<(i64, i64)>>) {
-    let scope = format!("kind={}", Kind::Gaps.as_str());
-    let scopes = [scope.as_str()];
-    // No gaps written and gaps unreadable both mean nothing to bucket, and
-    // `open` refuses an unwritten scope itself: asking `unwritten` first
-    // only walked the whole kind a second time.
-    let Ok(reader) = galata_datawatch::tape::reader::Reader::open(root, &scopes) else {
-        return;
-    };
-    let Ok(batches) = reader.view(galata_datawatch::tape::reader::Window {
-        kind: Kind::Gaps,
-        from_micros: i64::MIN + 1,
-        to_micros: i64::MAX,
-        ticker: None,
-    }) else {
+    // Through the one shared read: no gaps written is an empty batch list,
+    // and gaps that will not read leave nothing to bucket, as before.
+    let Ok(batches) = super::read_kind(root, Kind::Gaps, None, super::ALL_TIME) else {
         return;
     };
     for batch in &batches {
