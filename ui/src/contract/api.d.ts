@@ -1023,7 +1023,11 @@ export interface components {
             buckets: components["schemas"]["HourlyRows"][];
             /** @description Whether a cap applied — so a short answer and a capped one differ. */
             capped: boolean;
-            /** @description How many hours were returned. */
+            /**
+             * @description How many buckets the dates read held — at least what was returned.
+             *     The dates past the cap are not read, so this is not a total over the
+             *     whole record; `capped` says when there was more.
+             */
             hours: number;
         };
         /**
@@ -1454,7 +1458,7 @@ export interface operations {
             query?: {
                 /**
                  * @description The most segments a closed partition may hold. Defaults to
-                 *     [`COMPACTED_TO`]. Zero lists every closed partition holding anything,
+                 *     `COMPACTED_TO`. Zero lists every closed partition holding anything,
                  *     which shows the shape of the store rather than only its problems.
                  */
                 max_segments?: number | null;

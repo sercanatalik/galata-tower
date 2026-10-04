@@ -300,7 +300,7 @@
           {
             "name": "max_segments",
             "in": "query",
-            "description": "The most segments a closed partition may hold. Defaults to\n[`COMPACTED_TO`]. Zero lists every closed partition holding anything,\nwhich shows the shape of the store rather than only its problems.",
+            "description": "The most segments a closed partition may hold. Defaults to\n`COMPACTED_TO`. Zero lists every closed partition holding anything,\nwhich shows the shape of the store rather than only its problems.",
             "required": false,
             "schema": {
               "type": [
@@ -1891,7 +1891,7 @@
           },
           "hours": {
             "type": "integer",
-            "description": "How many hours were returned.",
+            "description": "How many buckets the dates read held — at least what was returned.\nThe dates past the cap are not read, so this is not a total over the\nwhole record; `capped` says when there was more.",
             "minimum": 0
           }
         }
